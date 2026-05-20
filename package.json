@@ -1,0 +1,9 @@
+{
+  "name": "markmind-utools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A uTools OpenAI-compatible assistant for selected content and chat.",
+  "scripts": {
+    "check": "node --check preload.js && node --check index.js"
+  }
+}

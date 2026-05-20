@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="MarkMind">
+  <rect width="96" height="96" rx="20" fill="#fdfbf5"/>
+  <path d="M18 28c0-6 5-11 11-11h38c6 0 11 5 11 11v23c0 6-5 11-11 11H45L30 76v-14h-1c-6 0-11-5-11-11V28Z" fill="#007f78"/>
+  <path d="M35 31h26v7H45v7h13v7H45v10H35V31Z" fill="#fff"/>
+  <path d="M58 58h15l-7 16-2-7-7-2 1-7Z" fill="#b86b00"/>
+</svg>
