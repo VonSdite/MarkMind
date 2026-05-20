@@ -33,6 +33,8 @@
     fetchingModelsProviderId: "",
     expandedProviderIds: {},
     draggingProviderId: "",
+    confirmResolver: null,
+    confirmPreviousFocus: null,
     toastTimer: 0
   };
 
@@ -101,6 +103,11 @@
     els.addProviderBtn = document.getElementById("addProviderBtn");
     els.saveSettingsBtn = document.getElementById("saveSettingsBtn");
     els.providersList = document.getElementById("providersList");
+    els.confirmOverlay = document.getElementById("confirmOverlay");
+    els.confirmTitle = document.getElementById("confirmTitle");
+    els.confirmMessage = document.getElementById("confirmMessage");
+    els.confirmCancelBtn = document.getElementById("confirmCancelBtn");
+    els.confirmOkBtn = document.getElementById("confirmOkBtn");
     els.toast = document.getElementById("toast");
   }
 
@@ -158,6 +165,22 @@
     els.providersList.addEventListener("dragover", handleProviderDragOver);
     els.providersList.addEventListener("drop", handleProviderDrop);
     els.providersList.addEventListener("dragend", handleProviderDragEnd);
+    els.confirmCancelBtn.addEventListener("click", function () {
+      closeConfirmDialog(false);
+    });
+    els.confirmOkBtn.addEventListener("click", function () {
+      closeConfirmDialog(true);
+    });
+    els.confirmOverlay.addEventListener("click", function (event) {
+      if (event.target === els.confirmOverlay) {
+        closeConfirmDialog(false);
+      }
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && state.confirmResolver) {
+        closeConfirmDialog(false);
+      }
+    });
 
     els.sideTabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
@@ -183,7 +206,7 @@
     }
   }
 
-  function handlePluginEnter(action) {
+  async function handlePluginEnter(action) {
     if (!action) {
       return;
     }
@@ -191,11 +214,11 @@
     var tab = tabFromActionCode(action.code);
     setTab(tab);
 
-    var payload = extractPayloadText(action.payload);
     if (tab === "settings") {
       return;
     }
 
+    var payload = await getEnterText(action);
     if (tab === "chat") {
       if (payload) {
         els.chatInput.value = payload;
@@ -248,6 +271,25 @@
     return "";
   }
 
+  async function getEnterText(action) {
+    var selectedText = action.type === "over" ? extractPayloadText(action.payload) : "";
+    if (selectedText) {
+      return selectedText;
+    }
+    return readClipboardText();
+  }
+
+  async function readClipboardText() {
+    if (!api.getClipboardText) {
+      return "";
+    }
+    try {
+      return String((await api.getClipboardText()) || "").trim();
+    } catch (error) {
+      return "";
+    }
+  }
+
   function setTab(tabName) {
     state.activeTab = tabName;
     if (TASKS[tabName]) {
@@ -260,6 +302,8 @@
     els.taskView.classList.toggle("is-active", !!TASKS[tabName]);
     els.chatView.classList.toggle("is-active", tabName === "chat");
     els.settingsView.classList.toggle("is-active", tabName === "settings");
+    els.modelBadge.hidden = tabName === "settings";
+    els.statusText.hidden = tabName === "settings";
     updateViewTitle();
     renderTaskModelSelect();
     renderChatModelSelect();
@@ -919,17 +963,26 @@
     );
   }
 
-  function handleAssistantClick(event) {
+  async function handleAssistantClick(event) {
     var item = event.target.closest(".assistant-item");
     if (!item) {
       return;
     }
 
     if (event.target.dataset.action === "delete-assistant") {
-      if (!window.confirm("删除这个助手？它下面的话题也会一起删除。")) {
+      event.preventDefault();
+      event.stopPropagation();
+      var assistantId = item.dataset.assistantId;
+      if (
+        !(await showConfirmDialog({
+          title: "删除助手",
+          message: "这个助手下的话题会一起删除。",
+          confirmText: "删除"
+        }))
+      ) {
         return;
       }
-      deleteAssistant(item.dataset.assistantId);
+      deleteAssistant(assistantId);
       return;
     }
 
@@ -976,17 +1029,26 @@
     updateModelBadge();
   }
 
-  function handleSessionClick(event) {
+  async function handleSessionClick(event) {
     var item = event.target.closest(".session-item");
     if (!item) {
       return;
     }
 
     if (event.target.dataset.action === "delete-session") {
-      if (!window.confirm("删除这个话题？")) {
+      event.preventDefault();
+      event.stopPropagation();
+      var sessionId = item.dataset.sessionId;
+      if (
+        !(await showConfirmDialog({
+          title: "删除话题",
+          message: "这条对话记录会被删除。",
+          confirmText: "删除"
+        }))
+      ) {
         return;
       }
-      deleteSession(item.dataset.sessionId);
+      deleteSession(sessionId);
       return;
     }
 
@@ -1430,7 +1492,7 @@
     updateModelBadge();
   }
 
-  function handleProviderClick(event) {
+  async function handleProviderClick(event) {
     var button = event.target.closest("button[data-action]");
     var summary = event.target.closest(".provider-summary");
     var card = event.target.closest(".provider-card");
@@ -1452,10 +1514,19 @@
     }
 
     if (button.dataset.action === "delete-provider") {
-      if (!window.confirm("删除这个 provider？")) {
+      event.preventDefault();
+      event.stopPropagation();
+      var providerId = card.dataset.providerId;
+      if (
+        !(await showConfirmDialog({
+          title: "删除 Provider",
+          message: "关联的模型选择会自动调整。",
+          confirmText: "删除"
+        }))
+      ) {
         return;
       }
-      deleteProvider(card.dataset.providerId);
+      deleteProvider(providerId);
       return;
     }
 
@@ -2257,6 +2328,48 @@
     return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   }
 
+  function showConfirmDialog(options) {
+    if (state.confirmResolver) {
+      closeConfirmDialog(false);
+    }
+
+    state.confirmPreviousFocus = document.activeElement;
+    els.confirmTitle.textContent = options.title || "确认操作";
+    els.confirmMessage.textContent = options.message || "";
+    els.confirmCancelBtn.textContent = options.cancelText || "取消";
+    els.confirmOkBtn.textContent = options.confirmText || "确认";
+    els.confirmOverlay.hidden = false;
+
+    return new Promise(function (resolve) {
+      state.confirmResolver = resolve;
+      window.setTimeout(function () {
+        els.confirmCancelBtn.focus();
+      }, 0);
+    });
+  }
+
+  function closeConfirmDialog(confirmed) {
+    if (!state.confirmResolver) {
+      return;
+    }
+
+    var resolve = state.confirmResolver;
+    var previousFocus = state.confirmPreviousFocus;
+    state.confirmResolver = null;
+    state.confirmPreviousFocus = null;
+    els.confirmOverlay.hidden = true;
+
+    if (previousFocus && previousFocus.focus) {
+      try {
+        previousFocus.focus();
+      } catch (error) {
+        // The previous element may have been removed after a confirmed delete.
+      }
+    }
+
+    resolve(confirmed === true);
+  }
+
   function showToast(message) {
     window.clearTimeout(state.toastTimer);
     els.toast.textContent = message;
@@ -2333,6 +2446,12 @@
       abortActive: function () {},
       copyText: function (text) {
         return navigator.clipboard.writeText(text);
+      },
+      getClipboardText: function () {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          return navigator.clipboard.readText();
+        }
+        return "";
       }
     };
   }

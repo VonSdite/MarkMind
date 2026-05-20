@@ -69,6 +69,7 @@ window.markMind = {
   },
   abortActive,
   copyText,
+  getClipboardText,
   onEnter(listener) {
     enterListeners.add(listener);
     return () => enterListeners.delete(listener);
@@ -333,6 +334,16 @@ function copyText(text) {
     return navigator.clipboard.writeText(value);
   }
   throw new Error("剪贴板不可用");
+}
+
+function getClipboardText() {
+  if (electronClipboard) {
+    return String(electronClipboard.readText() || "");
+  }
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.readText) {
+    return navigator.clipboard.readText();
+  }
+  return "";
 }
 
 function getStorage() {
