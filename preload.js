@@ -13,9 +13,9 @@ const iconv = require("iconv-lite");
 const officeParser = require("officeparser");
 const WordExtractor = require("word-extractor");
 
-const CONFIG_KEY = "ai-agent/config/v1";
-const CHAT_STORE_KEY = "ai-agent/chats/v1";
+const DATA_DIR_KEY = "ai-agent/data-dir/v1";
 const DEFAULT_DATA_DIR = getDefaultDataDir();
+const CONFIG_FILE = "config.json";
 const CHAT_STORE_FILE = "chat-store.json";
 const TASK_STORE_FILE = "task-store.json";
 const CACHE_DIR = "cache";
@@ -196,17 +196,26 @@ function dispatchOutAction(action) {
 
 function getConfig() {
   const storage = getStorage();
-  const stored = storage ? storage.getItem(CONFIG_KEY) : null;
-  return normalizeConfig(stored);
+  const dataDir = getStoredDataDir(storage);
+  const stored = readConfigFile(dataDir);
+  const normalized = normalizeConfig(Object.assign({}, stored || {}, { dataDir }));
+  writeConfigFile(normalized);
+  if (storage) {
+    saveStoredDataDir(storage, normalized.dataDir);
+  }
+  return normalized;
 }
 
 function saveConfig(config) {
+  const previous = getConfig();
   const normalized = normalizeConfig(config);
   const storage = getStorage();
   if (!storage) {
     throw new Error("当前环境不可用，无法保存设置");
   }
-  storage.setItem(CONFIG_KEY, normalized);
+  migrateDataDirectory(previous.dataDir, normalized.dataDir);
+  writeConfigFile(normalized);
+  saveStoredDataDir(storage, normalized.dataDir);
   startClipboardWatcher(normalized.clipboardPollingMs);
   return normalized;
 }
@@ -742,6 +751,24 @@ function getStorage() {
   return null;
 }
 
+function getStoredDataDir(storage) {
+  if (!storage) {
+    return DEFAULT_DATA_DIR;
+  }
+  const stored = storage.getItem(DATA_DIR_KEY);
+  if (typeof stored === "string") {
+    return normalizeDataDir(stored);
+  }
+  if (stored && typeof stored === "object") {
+    return normalizeDataDir(stored.dataDir);
+  }
+  return DEFAULT_DATA_DIR;
+}
+
+function saveStoredDataDir(storage, dataDir) {
+  storage.setItem(DATA_DIR_KEY, { dataDir: normalizeDataDir(dataDir) });
+}
+
 function getDefaultDataDir() {
   if (process.platform === "win32") {
     return "D:\\utools_ai_agent";
@@ -985,6 +1012,10 @@ function getAttachmentMime(extension) {
   return "text/plain";
 }
 
+function readConfigFile(dataDir) {
+  return readJsonFile(getConfigPath(dataDir));
+}
+
 function readChatStoreFile(config) {
   const filePath = getChatStorePath(config);
   return readJsonFile(filePath);
@@ -1006,6 +1037,17 @@ function readJsonFile(filePath) {
   return JSON.parse(content);
 }
 
+function writeConfigFile(config) {
+  const normalized = normalizeConfig(config);
+  const dataDir = normalizeDataDir(normalized.dataDir);
+  ensureDataDirectory(dataDir);
+  fs.writeFileSync(
+    getConfigPath(dataDir),
+    JSON.stringify(normalized, null, 2),
+    "utf8"
+  );
+}
+
 function writeChatStoreFile(config, store) {
   const dataDir = normalizeDataDir(config && config.dataDir);
   ensureDataDirectory(dataDir);
@@ -1024,6 +1066,87 @@ function writeTaskStoreFile(config, store) {
     JSON.stringify(store, null, 2),
     "utf8"
   );
+}
+
+function migrateDataDirectory(previousDir, nextDir) {
+  const fromDir = normalizeDataDir(previousDir);
+  const toDir = normalizeDataDir(nextDir);
+  if (fromDir === toDir || !fs.existsSync(fromDir)) {
+    ensureDataDirectory(toDir);
+    return;
+  }
+
+  ensureDataDirectory(toDir);
+  [CONFIG_FILE, CHAT_STORE_FILE, TASK_STORE_FILE, CACHE_DIR].forEach((name) => {
+    assertDataPathMergeable(path.join(fromDir, name), path.join(toDir, name));
+  });
+  [CONFIG_FILE, CHAT_STORE_FILE, TASK_STORE_FILE, CACHE_DIR].forEach((name) => {
+    mergeDataPath(path.join(fromDir, name), path.join(toDir, name));
+  });
+}
+
+function assertDataPathMergeable(source, target) {
+  if (!fs.existsSync(source)) {
+    return;
+  }
+
+  const stat = fs.statSync(source);
+  if (!fs.existsSync(target)) {
+    return;
+  }
+
+  const targetStat = fs.statSync(target);
+  if (stat.isDirectory() !== targetStat.isDirectory()) {
+    throwDataDirConflict(target);
+  }
+
+  if (stat.isDirectory()) {
+    fs.readdirSync(source).forEach((name) => {
+      assertDataPathMergeable(path.join(source, name), path.join(target, name));
+    });
+    return;
+  }
+
+  if (stat.isFile() && !filesHaveSameContent(source, target)) {
+    throwDataDirConflict(target);
+  }
+}
+
+function mergeDataPath(source, target) {
+  if (!fs.existsSync(source)) {
+    return;
+  }
+
+  const stat = fs.statSync(source);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(target, { recursive: true });
+    fs.readdirSync(source).forEach((name) => {
+      mergeDataPath(path.join(source, name), path.join(target, name));
+    });
+    return;
+  }
+
+  if (stat.isFile() && !fs.existsSync(target)) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  }
+}
+
+function filesHaveSameContent(left, right) {
+  const leftStat = fs.statSync(left);
+  const rightStat = fs.statSync(right);
+  if (!leftStat.isFile() || !rightStat.isFile() || leftStat.size !== rightStat.size) {
+    return false;
+  }
+  return fs.readFileSync(left).equals(fs.readFileSync(right));
+}
+
+function throwDataDirConflict(target) {
+  throw new Error("数据目录存在冲突文件，无法自动合并：" + target);
+}
+
+function getConfigPath(dataDir) {
+  return path.join(normalizeDataDir(dataDir), CONFIG_FILE);
 }
 
 function getChatStorePath(config) {

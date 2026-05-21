@@ -3427,6 +3427,9 @@
     if (saved) {
       await saveChatStoreQuietly({ showError: true });
       await saveTaskStoreQuietly({ immediate: true, showError: true });
+    } else {
+      state.config.dataDir = previousDir;
+      els.dataDirInput.value = previousDir;
     }
   }
 
