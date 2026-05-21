@@ -97,7 +97,10 @@
     taskSaveToken: 0,
     taskSpeechActive: false,
     taskSpeechText: "",
+    taskSpeechSource: "",
     taskSpeechUtterance: null,
+    selectionSpeechText: "",
+    selectionSpeechTimer: 0,
     taskRunId: "",
     runningTaskMode: "",
     toastTimer: 0
@@ -152,7 +155,7 @@
     els.stopTaskBtn = document.getElementById("stopTaskBtn");
     els.clearTaskBtn = document.getElementById("clearTaskBtn");
     els.copyTaskBtn = document.getElementById("copyTaskBtn");
-    els.speakTaskBtn = document.getElementById("speakTaskBtn");
+    els.selectionSpeakBtn = document.getElementById("selectionSpeakBtn");
     els.continueChatBtn = document.getElementById("continueChatBtn");
     els.sideTabs = Array.from(document.querySelectorAll(".side-tab"));
     els.taskView = document.getElementById("taskView");
@@ -220,7 +223,11 @@
     els.stopTaskBtn.addEventListener("click", stopActiveRequest);
     els.clearTaskBtn.addEventListener("click", clearTask);
     els.copyTaskBtn.addEventListener("click", copyTaskResult);
-    els.speakTaskBtn.addEventListener("click", toggleTaskSpeech);
+    els.selectionSpeakBtn.addEventListener("mousedown", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    els.selectionSpeakBtn.addEventListener("click", toggleSelectionSpeech);
     els.continueChatBtn.addEventListener("click", continueTaskInChat);
     els.taskAttachBtn.addEventListener("click", function () {
       chooseAttachmentFiles("task");
@@ -240,8 +247,13 @@
       invalidateActiveTaskResultForInputChange();
       syncActiveTaskFromInput();
       updateContinueChatButton();
+      hideSelectionSpeechButton();
     });
     els.inputText.addEventListener("paste", handleTaskPaste);
+    els.inputText.addEventListener("select", scheduleSelectionSpeechButtonUpdate);
+    els.inputText.addEventListener("mouseup", scheduleSelectionSpeechButtonUpdate);
+    els.inputText.addEventListener("keyup", scheduleSelectionSpeechButtonUpdate);
+    els.inputText.addEventListener("scroll", hideSelectionSpeechButton);
 
     els.newSessionBtn.addEventListener("click", createNewSession);
     els.chatSidebarToggleBtn.addEventListener("click", toggleChatSidebar);
@@ -284,6 +296,9 @@
     els.messagesList.addEventListener("click", handleReasoningSummaryClick);
     els.messagesList.addEventListener("click", handleCodeCopyClick);
     els.resultText.addEventListener("click", handleCodeCopyClick);
+    els.resultText.addEventListener("mouseup", scheduleSelectionSpeechButtonUpdate);
+    els.resultText.addEventListener("scroll", hideSelectionSpeechButton);
+    els.taskView.addEventListener("scroll", hideSelectionSpeechButton);
     els.chatSearchBtn.addEventListener("click", openChatSearch);
     els.chatSearchCloseBtn.addEventListener("click", function () {
       closeChatSearch(true);
@@ -377,6 +392,10 @@
       if (event.key !== "Escape") {
         return;
       }
+      if (els.selectionSpeakBtn && !els.selectionSpeakBtn.hidden) {
+        hideSelectionSpeechButton();
+        return;
+      }
       if (!els.imagePreviewOverlay.hidden) {
         closeImagePreview();
         return;
@@ -397,6 +416,9 @@
         closeConfirmDialog(false);
       }
     });
+    document.addEventListener("selectionchange", scheduleSelectionSpeechButtonUpdate);
+    document.addEventListener("mousedown", handleDocumentMouseDownForSelectionSpeech);
+    window.addEventListener("resize", hideSelectionSpeechButton);
 
     els.sideTabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
@@ -688,6 +710,7 @@
     }
     if (nextTab !== "task" || previousTaskMode !== state.activeTaskMode) {
       stopTaskSpeech();
+      hideSelectionSpeechButton();
     }
     state.activeTab = nextTab;
 
@@ -827,7 +850,6 @@
         }
       }
       els.copyTaskBtn.disabled = !state.currentResult;
-      updateTaskSpeechButton();
       updateContinueChatButton();
     }
     saveTaskStoreQuietly();
@@ -931,7 +953,6 @@
       els.stopTaskBtn.disabled = true;
       if (mode === state.activeTaskMode) {
         els.copyTaskBtn.disabled = !state.currentResult;
-        updateTaskSpeechButton();
       }
       updateContinueChatButton();
       saveTaskStoreQuietly({ immediate: true });
@@ -999,7 +1020,6 @@
     els.sendTaskBtn.disabled = false;
     els.stopTaskBtn.disabled = true;
     renderChatRunControls();
-    updateTaskSpeechButton();
     updateContinueChatButton();
     saveTaskStoreQuietly({ immediate: true });
   }
@@ -1023,6 +1043,7 @@
     state.currentResult = "";
     getActiveTaskState().cancelled = false;
     syncActiveTaskFromInput({ immediate: true });
+    hideSelectionSpeechButton();
     renderTaskPlaceholder(EMPTY_RESULT_PLACEHOLDER);
     els.copyTaskBtn.disabled = true;
     updateContinueChatButton();
@@ -1049,36 +1070,16 @@
     }
   }
 
-  function toggleTaskSpeech() {
-    if (state.taskSpeechActive) {
-      stopTaskSpeech();
-      return;
-    }
-
-    if (!supportsTaskSpeech()) {
-      showToast("当前环境不支持朗读");
-      updateTaskSpeechButton();
-      return;
-    }
-
-    if (!canShowTaskSpeechButton()) {
-      showToast("没有可朗读的音标内容");
-      updateTaskSpeechButton();
-      return;
-    }
-
-    startTaskSpeech(getTaskSpeechText());
-  }
-
-  function startTaskSpeech(text) {
+  function startTaskSpeech(text, options) {
     var speechText = normalizeSpeechText(text);
     if (!speechText || !supportsTaskSpeech()) {
       return;
     }
 
+    var speechOptions = options || {};
     var speech = window.speechSynthesis;
     var utterance = new window.SpeechSynthesisUtterance(speechText);
-    utterance.lang = "en-US";
+    utterance.lang = speechOptions.lang || detectSpeechLanguage(speechText);
     utterance.rate = 0.9;
     utterance.pitch = 1;
     utterance.onend = function () {
@@ -1095,8 +1096,9 @@
     speech.cancel();
     state.taskSpeechActive = true;
     state.taskSpeechText = speechText;
+    state.taskSpeechSource = speechOptions.source || "selection";
     state.taskSpeechUtterance = utterance;
-    syncTaskSpeechButton();
+    syncSelectionSpeechButton();
 
     try {
       speech.speak(utterance);
@@ -1106,18 +1108,17 @@
     }
   }
 
-  function stopTaskSpeech(options) {
+  function stopTaskSpeech() {
     var shouldCancel = state.taskSpeechActive || state.taskSpeechUtterance;
     state.taskSpeechActive = false;
     state.taskSpeechText = "";
+    state.taskSpeechSource = "";
     state.taskSpeechUtterance = null;
 
     if (shouldCancel && supportsTaskSpeech()) {
       window.speechSynthesis.cancel();
     }
-    if (!options || options.skipButtonUpdate !== true) {
-      syncTaskSpeechButton();
-    }
+    syncSelectionSpeechButton();
   }
 
   function finishTaskSpeech(utterance) {
@@ -1126,47 +1127,288 @@
     }
     state.taskSpeechActive = false;
     state.taskSpeechText = "";
+    state.taskSpeechSource = "";
     state.taskSpeechUtterance = null;
-    syncTaskSpeechButton();
+    syncSelectionSpeechButton();
   }
 
-  function updateTaskSpeechButton() {
-    if (!els.speakTaskBtn) {
+  function toggleSelectionSpeech() {
+    var speechText = normalizeSelectionSpeechText(state.selectionSpeechText);
+    if (!speechText) {
+      updateSelectionSpeechButton();
+      speechText = normalizeSelectionSpeechText(state.selectionSpeechText);
+    }
+
+    if (!supportsTaskSpeech()) {
+      showToast("当前环境不支持朗读");
+      hideSelectionSpeechButton();
+      return;
+    }
+    if (!speechText) {
+      showToast("请先选中要朗读的文本");
+      hideSelectionSpeechButton();
+      return;
+    }
+    if (state.taskSpeechActive && state.taskSpeechSource === "selection" && state.taskSpeechText === speechText) {
+      stopTaskSpeech();
       return;
     }
 
-    var speechText = canShowTaskSpeechButton() ? getTaskSpeechText() : "";
-    if (state.taskSpeechActive && speechText !== state.taskSpeechText) {
-      stopTaskSpeech({ skipButtonUpdate: true });
-    }
-
-    var visible = Boolean(speechText);
-    els.speakTaskBtn.hidden = !visible;
-    els.speakTaskBtn.disabled = !visible;
-    syncTaskSpeechButton();
+    startTaskSpeech(speechText, {
+      source: "selection",
+      lang: detectSpeechLanguage(speechText)
+    });
   }
 
-  function syncTaskSpeechButton() {
-    if (!els.speakTaskBtn) {
+  function scheduleSelectionSpeechButtonUpdate() {
+    window.clearTimeout(state.selectionSpeechTimer);
+    state.selectionSpeechTimer = window.setTimeout(updateSelectionSpeechButton, 20);
+  }
+
+  function updateSelectionSpeechButton() {
+    if (!els.selectionSpeakBtn) {
       return;
     }
-    var title = state.taskSpeechActive ? "停止朗读" : "朗读";
-    els.speakTaskBtn.classList.toggle("is-speaking", state.taskSpeechActive);
-    els.speakTaskBtn.setAttribute("title", title);
-    els.speakTaskBtn.setAttribute("aria-label", title);
-    els.speakTaskBtn.setAttribute("aria-pressed", state.taskSpeechActive ? "true" : "false");
+    if (!canUseSelectionSpeech()) {
+      hideSelectionSpeechButton();
+      return;
+    }
+
+    var target = getSelectionSpeechTarget();
+    if (!target || !target.text) {
+      hideSelectionSpeechButton();
+      return;
+    }
+
+    state.selectionSpeechText = target.text;
+    positionSelectionSpeechButton(target.rect);
+    syncSelectionSpeechButton();
   }
 
-  function canShowTaskSpeechButton() {
-    var activeRunning = state.running && state.runningTaskMode === state.activeTaskMode;
-    return (
-      state.activeTaskMode === "translate" &&
-      !activeRunning &&
-      Boolean(state.currentResult) &&
-      supportsTaskSpeech() &&
-      hasPhoneticText(state.currentResult) &&
-      Boolean(getTaskSpeechText())
-    );
+  function hideSelectionSpeechButton() {
+    window.clearTimeout(state.selectionSpeechTimer);
+    state.selectionSpeechText = "";
+    if (!els.selectionSpeakBtn) {
+      return;
+    }
+    els.selectionSpeakBtn.hidden = true;
+    els.selectionSpeakBtn.style.left = "";
+    els.selectionSpeakBtn.style.top = "";
+    els.selectionSpeakBtn.style.visibility = "";
+    syncSelectionSpeechButton();
+  }
+
+  function syncSelectionSpeechButton() {
+    if (!els.selectionSpeakBtn) {
+      return;
+    }
+    var active =
+      state.taskSpeechActive &&
+      state.taskSpeechSource === "selection" &&
+      Boolean(state.selectionSpeechText) &&
+      state.taskSpeechText === state.selectionSpeechText;
+    var title = active ? "停止朗读" : "朗读选中文本";
+    els.selectionSpeakBtn.classList.toggle("is-speaking", active);
+    els.selectionSpeakBtn.setAttribute("title", title);
+    els.selectionSpeakBtn.setAttribute("aria-label", title);
+    els.selectionSpeakBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+
+  function canUseSelectionSpeech() {
+    return state.activeTab === "task" && state.activeTaskMode === "translate";
+  }
+
+  function getSelectionSpeechTarget() {
+    return getTextareaSpeechSelection() || getOutputSpeechSelection();
+  }
+
+  function getTextareaSpeechSelection() {
+    if (document.activeElement !== els.inputText) {
+      return null;
+    }
+    var start = els.inputText.selectionStart;
+    var end = els.inputText.selectionEnd;
+    if (typeof start !== "number" || typeof end !== "number" || start === end) {
+      return null;
+    }
+
+    var from = Math.min(start, end);
+    var to = Math.max(start, end);
+    var text = normalizeSelectionSpeechText(els.inputText.value.slice(from, to));
+    if (!text) {
+      return null;
+    }
+
+    return {
+      text: text,
+      rect: getTextareaSelectionRect(els.inputText)
+    };
+  }
+
+  function getTextareaSelectionRect(textarea) {
+    var textareaRect = textarea.getBoundingClientRect();
+    var style = window.getComputedStyle(textarea);
+    var mirror = document.createElement("div");
+    var marker = document.createElement("span");
+    var properties = [
+      "boxSizing",
+      "borderTopWidth",
+      "borderRightWidth",
+      "borderBottomWidth",
+      "borderLeftWidth",
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft",
+      "fontFamily",
+      "fontSize",
+      "fontWeight",
+      "fontStyle",
+      "letterSpacing",
+      "textTransform",
+      "textAlign",
+      "lineHeight",
+      "wordBreak",
+      "tabSize"
+    ];
+
+    properties.forEach(function (property) {
+      mirror.style[property] = style[property];
+    });
+    mirror.style.position = "fixed";
+    mirror.style.left = textareaRect.left + "px";
+    mirror.style.top = textareaRect.top + "px";
+    mirror.style.width = textareaRect.width + "px";
+    mirror.style.minHeight = textareaRect.height + "px";
+    mirror.style.visibility = "hidden";
+    mirror.style.pointerEvents = "none";
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.overflowWrap = "break-word";
+    mirror.style.overflow = "hidden";
+    mirror.textContent = textarea.value.slice(0, textarea.selectionEnd);
+    marker.textContent = "\u200b";
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+
+    var markerRect = marker.getBoundingClientRect();
+    document.body.removeChild(mirror);
+
+    var lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.55 || 20;
+    var left = markerRect.left - textarea.scrollLeft;
+    var top = markerRect.top - textarea.scrollTop;
+    return {
+      left: left,
+      right: left,
+      top: top,
+      bottom: top + lineHeight
+    };
+  }
+
+  function getOutputSpeechSelection() {
+    if (!state.currentResult || !window.getSelection) {
+      return null;
+    }
+    var selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return null;
+    }
+
+    var range = selection.getRangeAt(0);
+    if (!isNodeInside(els.resultText, range.commonAncestorContainer)) {
+      return null;
+    }
+
+    var text = normalizeSelectionSpeechText(selection.toString());
+    if (!text) {
+      return null;
+    }
+
+    return {
+      text: text,
+      rect: getRangeSelectionRect(range)
+    };
+  }
+
+  function getRangeSelectionRect(range) {
+    var rects = Array.from(range.getClientRects()).filter(function (rect) {
+      return rect.width > 0 || rect.height > 0;
+    });
+    if (rects.length) {
+      return rects[rects.length - 1];
+    }
+    return range.getBoundingClientRect();
+  }
+
+  function isNodeInside(container, node) {
+    var target = node && node.nodeType === 3 ? node.parentNode : node;
+    return Boolean(container && target && (target === container || container.contains(target)));
+  }
+
+  function normalizeSelectionSpeechText(value) {
+    var text = normalizeSpeechText(value).replace(/[\u200B-\u200D\uFEFF]/g, "");
+    return hasSpeakableSelectionText(text) ? text : "";
+  }
+
+  function hasSpeakableSelectionText(value) {
+    return /[A-Za-z0-9\u3400-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(value);
+  }
+
+  function positionSelectionSpeechButton(rect) {
+    if (!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.left)) {
+      hideSelectionSpeechButton();
+      return;
+    }
+
+    var button = els.selectionSpeakBtn;
+    var margin = 8;
+    button.style.visibility = "hidden";
+    button.hidden = false;
+
+    var width = button.offsetWidth || 32;
+    var height = button.offsetHeight || 32;
+    var left = rect.right + 6;
+    var top = rect.top - height - 6;
+
+    if (left + width + margin > window.innerWidth) {
+      left = rect.left - width - 6;
+    }
+    if (left < margin) {
+      left = Math.min(Math.max(rect.left, margin), window.innerWidth - width - margin);
+    }
+    if (top < margin) {
+      top = rect.bottom + 6;
+    }
+    if (top + height + margin > window.innerHeight) {
+      top = Math.max(margin, window.innerHeight - height - margin);
+    }
+
+    button.style.left = Math.round(left) + "px";
+    button.style.top = Math.round(top) + "px";
+    button.style.visibility = "";
+  }
+
+  function handleDocumentMouseDownForSelectionSpeech(event) {
+    var target = event.target;
+    if (target && target.closest && target.closest("#selectionSpeakBtn")) {
+      return;
+    }
+    if (target === els.inputText || isNodeInside(els.resultText, target)) {
+      return;
+    }
+    hideSelectionSpeechButton();
+  }
+
+  function detectSpeechLanguage(text) {
+    if (/[\u3040-\u30FF]/.test(text)) {
+      return "ja-JP";
+    }
+    if (/[\uAC00-\uD7AF]/.test(text)) {
+      return "ko-KR";
+    }
+    if (/[\u3400-\u9FFF]/.test(text)) {
+      return "zh-CN";
+    }
+    return "en-US";
   }
 
   function supportsTaskSpeech() {
@@ -1175,129 +1417,6 @@
       Boolean(window.speechSynthesis) &&
       typeof window.SpeechSynthesisUtterance === "function"
     );
-  }
-
-  function getTaskSpeechText() {
-    var taskState = getActiveTaskState();
-    var sourceText = normalizeSpeechText(taskState.inputText || els.inputText.value);
-    if (isSpeakableEnglishText(sourceText)) {
-      return sourceText;
-    }
-    return extractSpeechTextFromTranslation(state.currentResult);
-  }
-
-  function hasPhoneticText(value) {
-    return findPhoneticIndex(String(value || "")) >= 0;
-  }
-
-  function findPhoneticIndex(value) {
-    var text = String(value || "");
-    var phoneticChar = "[\\u0250-\\u02AF\\u02B0-\\u02FF\\u1D00-\\u1D7F\\u00E6\\u00F0\\u014B\\u0153\\u00F8\\u00E7]";
-    var patterns = [
-      new RegExp("(?:音标|发音|读音)\\s*[:：]?\\s*(?:/[^/\\n]{1,80}/|\\[[^\\]\\n]{1,80}\\])", "i"),
-      new RegExp("/[^/\\n]{0,80}" + phoneticChar + "[^/\\n]{0,80}/", "i"),
-      new RegExp("\\[[^\\]\\n]{0,80}" + phoneticChar + "[^\\]\\n]{0,80}\\]", "i")
-    ];
-
-    for (var index = 0; index < patterns.length; index += 1) {
-      var matchIndex = text.search(patterns[index]);
-      if (matchIndex >= 0) {
-        return matchIndex;
-      }
-    }
-    return -1;
-  }
-
-  function extractSpeechTextFromTranslation(value) {
-    var lines = stripMarkdownForSpeech(value)
-      .split(/\r?\n/)
-      .map(normalizeSpeechText)
-      .filter(Boolean);
-    var index;
-    var candidate;
-
-    for (index = 0; index < lines.length; index += 1) {
-      if (!hasPhoneticText(lines[index])) {
-        continue;
-      }
-      candidate = extractEnglishCandidate(removePhoneticPart(lines[index]));
-      if (candidate) {
-        return candidate;
-      }
-    }
-
-    for (index = 0; index < lines.length; index += 1) {
-      candidate = extractLabelledEnglishCandidate(lines[index]);
-      if (candidate) {
-        return candidate;
-      }
-    }
-
-    for (index = 0; index < lines.length; index += 1) {
-      if (isSpeechMetadataLine(lines[index])) {
-        continue;
-      }
-      candidate = extractEnglishCandidate(lines[index]);
-      if (candidate) {
-        return candidate;
-      }
-    }
-    return "";
-  }
-
-  function stripMarkdownForSpeech(value) {
-    return String(value || "")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/`([^`]+)`/g, "$1")
-      .replace(/^\s{0,3}#{1,6}\s*/gm, "")
-      .replace(/^\s*[-+*]\s+/gm, "")
-      .replace(/^\s*\d+\.\s+/gm, "")
-      .replace(/[*_>~]/g, "");
-  }
-
-  function extractLabelledEnglishCandidate(line) {
-    var match = line.match(/(?:英文(?:翻译|译文)?|英语|译文|翻译|单词|短语|原词|词条)\s*[:：]\s*([^。；;，,]+)/i);
-    return match ? extractEnglishCandidate(match[1]) : "";
-  }
-
-  function extractEnglishCandidate(value) {
-    var text = normalizeSpeechText(removePhoneticPart(value));
-    var quoted = text.match(/["'“‘]([A-Za-z][A-Za-z\s'\u2019-]{0,80})["'”’]/);
-    var match = quoted || text.match(/[A-Za-z][A-Za-z'\u2019-]*(?:\s+[A-Za-z][A-Za-z'\u2019-]*){0,7}/);
-    var candidate = normalizeSpeechText(match ? match[1] || match[0] : "");
-    return isSpeakableEnglishCandidate(candidate) ? candidate : "";
-  }
-
-  function removePhoneticPart(value) {
-    var text = String(value || "");
-    var index = findPhoneticIndex(text);
-    if (index >= 0) {
-      return text.slice(0, index);
-    }
-    return text.replace(/(?:音标|发音|读音)\s*[:：].*$/i, "");
-  }
-
-  function isSpeakableEnglishText(value) {
-    return isSpeakableEnglishCandidate(normalizeSpeechText(value));
-  }
-
-  function isSpeakableEnglishCandidate(value) {
-    var text = normalizeSpeechText(value);
-    var words = text.match(/[A-Za-z]+(?:['\u2019-][A-Za-z]+)*/g) || [];
-    if (!words.length || words.length > 12 || text.length > 160) {
-      return false;
-    }
-    if (/[\u3400-\u9FFF]/.test(text) || !/[A-Za-z]/.test(text)) {
-      return false;
-    }
-    if (/^(?:n|v|adj|adv|noun|verb|adjective|adverb|pronoun|preposition|conjunction|interjection|determiner|modal|phrase|example|meaning|translation)\.?$/i.test(text)) {
-      return false;
-    }
-    return true;
-  }
-
-  function isSpeechMetadataLine(line) {
-    return /^(?:音标|发音|读音|词性|含义|释义|意思|例句|示例|中文|中文译文|英文例句|用法|搭配|同义词|反义词|备注)\s*[:：]/.test(line);
   }
 
   function normalizeSpeechText(value) {
@@ -1310,12 +1429,13 @@
   }
 
   function renderTaskResult(text, cancelled) {
+    hideSelectionSpeechButton();
     els.resultText.classList.remove("is-placeholder", "is-processing");
     els.resultText.innerHTML = (text ? renderMarkdown(text) : "") + (cancelled ? renderCancelDivider() : "");
-    updateTaskSpeechButton();
   }
 
   function renderTaskPlaceholder(text, processing) {
+    hideSelectionSpeechButton();
     els.resultText.classList.add("is-placeholder");
     els.resultText.classList.toggle("is-processing", processing === true);
     els.resultText.innerHTML = processing
@@ -1325,7 +1445,6 @@
         escapeHtml(text) +
         "</span></span>"
       : '<span class="result-placeholder">' + escapeHtml(text) + "</span>";
-    updateTaskSpeechButton();
   }
 
   function updateContinueChatButton() {

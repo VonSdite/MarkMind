@@ -478,9 +478,7 @@ button:disabled {
 }
 
 #copyTaskBtn:disabled,
-#copyTaskBtn:disabled:hover,
-#speakTaskBtn:disabled,
-#speakTaskBtn:disabled:hover {
+#copyTaskBtn:disabled:hover {
   border-color: var(--line);
   background: #ffffff;
   color: var(--muted);
@@ -490,6 +488,28 @@ button:disabled {
   border-color: #9ccdc3;
   background: #eef8f5;
   color: var(--teal-dark);
+}
+
+.selection-speech-btn[hidden] {
+  display: none;
+}
+
+.selection-speech-btn {
+  position: fixed;
+  z-index: 65;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  border-color: #9ccdc3;
+  background: #ffffff;
+  color: var(--teal-dark);
+  box-shadow: 0 10px 24px rgba(18, 34, 30, 0.18);
+}
+
+.selection-speech-btn:hover {
+  border-color: #7dbab0;
+  background: #eef8f5;
 }
 
 .icon-btn.is-copied {
