@@ -74,6 +74,9 @@
     confirmPreviousFocus: null,
     settingsSaveToken: 0,
     taskSaveTimer: 0,
+    taskSpeechActive: false,
+    taskSpeechText: "",
+    taskSpeechUtterance: null,
     runningTaskMode: "",
     toastTimer: 0
   };
@@ -127,6 +130,7 @@
     els.stopTaskBtn = document.getElementById("stopTaskBtn");
     els.clearTaskBtn = document.getElementById("clearTaskBtn");
     els.copyTaskBtn = document.getElementById("copyTaskBtn");
+    els.speakTaskBtn = document.getElementById("speakTaskBtn");
     els.continueChatBtn = document.getElementById("continueChatBtn");
     els.sideTabs = Array.from(document.querySelectorAll(".side-tab"));
     els.taskView = document.getElementById("taskView");
@@ -193,6 +197,7 @@
     els.stopTaskBtn.addEventListener("click", stopActiveRequest);
     els.clearTaskBtn.addEventListener("click", clearTask);
     els.copyTaskBtn.addEventListener("click", copyTaskResult);
+    els.speakTaskBtn.addEventListener("click", toggleTaskSpeech);
     els.continueChatBtn.addEventListener("click", continueTaskInChat);
     els.taskAttachBtn.addEventListener("click", function () {
       chooseAttachmentFiles("task");
@@ -645,6 +650,9 @@
     if (nextTab !== "task" && nextTab !== "chat" && nextTab !== "settings") {
       nextTab = "task";
     }
+    if (nextTab !== "task" || previousTaskMode !== state.activeTaskMode) {
+      stopTaskSpeech();
+    }
     state.activeTab = nextTab;
 
     renderSideTabs();
@@ -783,6 +791,7 @@
         }
       }
       els.copyTaskBtn.disabled = !state.currentResult;
+      updateTaskSpeechButton();
       updateContinueChatButton();
     }
     saveTaskStoreQuietly();
@@ -872,6 +881,7 @@
       els.stopTaskBtn.disabled = true;
       if (mode === state.activeTaskMode) {
         els.copyTaskBtn.disabled = !state.currentResult;
+        updateTaskSpeechButton();
       }
       updateContinueChatButton();
       saveTaskStoreQuietly({ immediate: true });
@@ -934,6 +944,7 @@
     els.sendTaskBtn.disabled = false;
     els.stopTaskBtn.disabled = true;
     renderChatRunControls();
+    updateTaskSpeechButton();
     updateContinueChatButton();
     saveTaskStoreQuietly({ immediate: true });
   }
@@ -983,9 +994,270 @@
     }
   }
 
+  function toggleTaskSpeech() {
+    if (state.taskSpeechActive) {
+      stopTaskSpeech();
+      return;
+    }
+
+    if (!supportsTaskSpeech()) {
+      showToast("当前环境不支持朗读");
+      updateTaskSpeechButton();
+      return;
+    }
+
+    if (!canShowTaskSpeechButton()) {
+      showToast("没有可朗读的音标内容");
+      updateTaskSpeechButton();
+      return;
+    }
+
+    startTaskSpeech(getTaskSpeechText());
+  }
+
+  function startTaskSpeech(text) {
+    var speechText = normalizeSpeechText(text);
+    if (!speechText || !supportsTaskSpeech()) {
+      return;
+    }
+
+    var speech = window.speechSynthesis;
+    var utterance = new window.SpeechSynthesisUtterance(speechText);
+    utterance.lang = "en-US";
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    utterance.onend = function () {
+      finishTaskSpeech(utterance);
+    };
+    utterance.onerror = function (event) {
+      var ignored = event && (event.error === "canceled" || event.error === "interrupted");
+      finishTaskSpeech(utterance);
+      if (!ignored) {
+        showToast("朗读失败");
+      }
+    };
+
+    speech.cancel();
+    state.taskSpeechActive = true;
+    state.taskSpeechText = speechText;
+    state.taskSpeechUtterance = utterance;
+    syncTaskSpeechButton();
+
+    try {
+      speech.speak(utterance);
+    } catch (error) {
+      finishTaskSpeech(utterance);
+      showToast("朗读失败：" + getErrorMessage(error));
+    }
+  }
+
+  function stopTaskSpeech(options) {
+    var shouldCancel = state.taskSpeechActive || state.taskSpeechUtterance;
+    state.taskSpeechActive = false;
+    state.taskSpeechText = "";
+    state.taskSpeechUtterance = null;
+
+    if (shouldCancel && supportsTaskSpeech()) {
+      window.speechSynthesis.cancel();
+    }
+    if (!options || options.skipButtonUpdate !== true) {
+      syncTaskSpeechButton();
+    }
+  }
+
+  function finishTaskSpeech(utterance) {
+    if (state.taskSpeechUtterance !== utterance) {
+      return;
+    }
+    state.taskSpeechActive = false;
+    state.taskSpeechText = "";
+    state.taskSpeechUtterance = null;
+    syncTaskSpeechButton();
+  }
+
+  function updateTaskSpeechButton() {
+    if (!els.speakTaskBtn) {
+      return;
+    }
+
+    var speechText = canShowTaskSpeechButton() ? getTaskSpeechText() : "";
+    if (state.taskSpeechActive && speechText !== state.taskSpeechText) {
+      stopTaskSpeech({ skipButtonUpdate: true });
+    }
+
+    var visible = Boolean(speechText);
+    els.speakTaskBtn.hidden = !visible;
+    els.speakTaskBtn.disabled = !visible;
+    syncTaskSpeechButton();
+  }
+
+  function syncTaskSpeechButton() {
+    if (!els.speakTaskBtn) {
+      return;
+    }
+    var title = state.taskSpeechActive ? "停止朗读" : "朗读";
+    els.speakTaskBtn.classList.toggle("is-speaking", state.taskSpeechActive);
+    els.speakTaskBtn.setAttribute("title", title);
+    els.speakTaskBtn.setAttribute("aria-label", title);
+    els.speakTaskBtn.setAttribute("aria-pressed", state.taskSpeechActive ? "true" : "false");
+  }
+
+  function canShowTaskSpeechButton() {
+    var activeRunning = state.running && state.runningTaskMode === state.activeTaskMode;
+    return (
+      state.activeTaskMode === "translate" &&
+      !activeRunning &&
+      Boolean(state.currentResult) &&
+      supportsTaskSpeech() &&
+      hasPhoneticText(state.currentResult) &&
+      Boolean(getTaskSpeechText())
+    );
+  }
+
+  function supportsTaskSpeech() {
+    return (
+      typeof window !== "undefined" &&
+      Boolean(window.speechSynthesis) &&
+      typeof window.SpeechSynthesisUtterance === "function"
+    );
+  }
+
+  function getTaskSpeechText() {
+    var taskState = getActiveTaskState();
+    var sourceText = normalizeSpeechText(taskState.inputText || els.inputText.value);
+    if (isSpeakableEnglishText(sourceText)) {
+      return sourceText;
+    }
+    return extractSpeechTextFromTranslation(state.currentResult);
+  }
+
+  function hasPhoneticText(value) {
+    return findPhoneticIndex(String(value || "")) >= 0;
+  }
+
+  function findPhoneticIndex(value) {
+    var text = String(value || "");
+    var phoneticChar = "[\\u0250-\\u02AF\\u02B0-\\u02FF\\u1D00-\\u1D7F\\u00E6\\u00F0\\u014B\\u0153\\u00F8\\u00E7]";
+    var patterns = [
+      new RegExp("(?:音标|发音|读音)\\s*[:：]?\\s*(?:/[^/\\n]{1,80}/|\\[[^\\]\\n]{1,80}\\])", "i"),
+      new RegExp("/[^/\\n]{0,80}" + phoneticChar + "[^/\\n]{0,80}/", "i"),
+      new RegExp("\\[[^\\]\\n]{0,80}" + phoneticChar + "[^\\]\\n]{0,80}\\]", "i")
+    ];
+
+    for (var index = 0; index < patterns.length; index += 1) {
+      var matchIndex = text.search(patterns[index]);
+      if (matchIndex >= 0) {
+        return matchIndex;
+      }
+    }
+    return -1;
+  }
+
+  function extractSpeechTextFromTranslation(value) {
+    var lines = stripMarkdownForSpeech(value)
+      .split(/\r?\n/)
+      .map(normalizeSpeechText)
+      .filter(Boolean);
+    var index;
+    var candidate;
+
+    for (index = 0; index < lines.length; index += 1) {
+      if (!hasPhoneticText(lines[index])) {
+        continue;
+      }
+      candidate = extractEnglishCandidate(removePhoneticPart(lines[index]));
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    for (index = 0; index < lines.length; index += 1) {
+      candidate = extractLabelledEnglishCandidate(lines[index]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    for (index = 0; index < lines.length; index += 1) {
+      if (isSpeechMetadataLine(lines[index])) {
+        continue;
+      }
+      candidate = extractEnglishCandidate(lines[index]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return "";
+  }
+
+  function stripMarkdownForSpeech(value) {
+    return String(value || "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+      .replace(/^\s*[-+*]\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      .replace(/[*_>~]/g, "");
+  }
+
+  function extractLabelledEnglishCandidate(line) {
+    var match = line.match(/(?:英文(?:翻译|译文)?|英语|译文|翻译|单词|短语|原词|词条)\s*[:：]\s*([^。；;，,]+)/i);
+    return match ? extractEnglishCandidate(match[1]) : "";
+  }
+
+  function extractEnglishCandidate(value) {
+    var text = normalizeSpeechText(removePhoneticPart(value));
+    var quoted = text.match(/["'“‘]([A-Za-z][A-Za-z\s'\u2019-]{0,80})["'”’]/);
+    var match = quoted || text.match(/[A-Za-z][A-Za-z'\u2019-]*(?:\s+[A-Za-z][A-Za-z'\u2019-]*){0,7}/);
+    var candidate = normalizeSpeechText(match ? match[1] || match[0] : "");
+    return isSpeakableEnglishCandidate(candidate) ? candidate : "";
+  }
+
+  function removePhoneticPart(value) {
+    var text = String(value || "");
+    var index = findPhoneticIndex(text);
+    if (index >= 0) {
+      return text.slice(0, index);
+    }
+    return text.replace(/(?:音标|发音|读音)\s*[:：].*$/i, "");
+  }
+
+  function isSpeakableEnglishText(value) {
+    return isSpeakableEnglishCandidate(normalizeSpeechText(value));
+  }
+
+  function isSpeakableEnglishCandidate(value) {
+    var text = normalizeSpeechText(value);
+    var words = text.match(/[A-Za-z]+(?:['\u2019-][A-Za-z]+)*/g) || [];
+    if (!words.length || words.length > 12 || text.length > 160) {
+      return false;
+    }
+    if (/[\u3400-\u9FFF]/.test(text) || !/[A-Za-z]/.test(text)) {
+      return false;
+    }
+    if (/^(?:n|v|adj|adv|noun|verb|adjective|adverb|pronoun|preposition|conjunction|interjection|determiner|modal|phrase|example|meaning|translation)\.?$/i.test(text)) {
+      return false;
+    }
+    return true;
+  }
+
+  function isSpeechMetadataLine(line) {
+    return /^(?:音标|发音|读音|词性|含义|释义|意思|例句|示例|中文|中文译文|英文例句|用法|搭配|同义词|反义词|备注)\s*[:：]/.test(line);
+  }
+
+  function normalizeSpeechText(value) {
+    return String(value || "")
+      .replace(/[\r\n]+/g, " ")
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function renderTaskResult(text, cancelled) {
     els.resultText.classList.remove("is-placeholder", "is-processing");
     els.resultText.innerHTML = (text ? renderMarkdown(text) : "") + (cancelled ? renderCancelDivider() : "");
+    updateTaskSpeechButton();
   }
 
   function renderTaskPlaceholder(text, processing) {
@@ -998,6 +1270,7 @@
         escapeHtml(text) +
         "</span></span>"
       : '<span class="result-placeholder">' + escapeHtml(text) + "</span>";
+    updateTaskSpeechButton();
   }
 
   function updateContinueChatButton() {
@@ -5295,6 +5568,104 @@
     return "<p>" + escapeHtml(text).replace(/\n/g, "<br>") + "</p>";
   }
 
+  async function fetchModelsInBrowser(payload) {
+    var provider = trimProvider(normalizeProvider(payload));
+    var endpointError = validateEndpoint(provider.endpoint);
+    if (endpointError) {
+      throw new Error(endpointError);
+    }
+    if (typeof fetch !== "function") {
+      throw new Error("当前环境不支持浏览器拉取模型");
+    }
+
+    var candidates = getBrowserModelEndpointCandidates(provider.endpoint);
+    var errors = [];
+    for (var index = 0; index < candidates.length; index += 1) {
+      var url = candidates[index];
+      try {
+        var models = await fetchModelsFromBrowserEndpoint(url, provider);
+        if (models.length) {
+          return { models: models, sourceUrl: url };
+        }
+        errors.push(url + ": 未返回模型列表");
+      } catch (error) {
+        errors.push(url + ": " + getErrorMessage(error));
+      }
+    }
+
+    throw new Error("拉取模型失败，已尝试 /v1/models 和 /models。" + errors.join("；"));
+  }
+
+  async function fetchModelsFromBrowserEndpoint(url, provider) {
+    var headers = { Accept: "application/json" };
+    if (provider.apiKey) {
+      headers.Authorization = "Bearer " + provider.apiKey;
+    }
+
+    var response = await fetch(url, {
+      method: "GET",
+      headers: headers
+    });
+    var body = await response.text();
+    if (!response.ok) {
+      throw new Error("HTTP " + response.status + (body ? " " + body.slice(0, 160) : ""));
+    }
+
+    var json = {};
+    try {
+      json = body ? JSON.parse(body) : {};
+    } catch (error) {
+      throw new Error("响应不是有效 JSON");
+    }
+    return extractBrowserModelNames(json);
+  }
+
+  function getBrowserModelEndpointCandidates(endpoint) {
+    var parsed = new URL(endpoint);
+    parsed.search = "";
+    parsed.hash = "";
+    var basePath = parsed.pathname
+      .replace(/\/+$/g, "")
+      .replace(/\/v1\/chat\/completions$/i, "")
+      .replace(/\/+$/g, "");
+    var baseUrl = parsed.origin + basePath;
+    return [joinBrowserUrl(baseUrl, "/v1/models"), joinBrowserUrl(baseUrl, "/models")];
+  }
+
+  function joinBrowserUrl(baseUrl, suffix) {
+    return baseUrl.replace(/\/+$/g, "") + "/" + suffix.replace(/^\/+/g, "");
+  }
+
+  function extractBrowserModelNames(value) {
+    var root = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    var candidates = Array.isArray(value)
+      ? value
+      : Array.isArray(root.data)
+        ? root.data
+        : Array.isArray(root.models)
+          ? root.models
+          : [];
+    var seen = {};
+    var names = [];
+
+    candidates.forEach(function (item) {
+      var name = "";
+      if (typeof item === "string") {
+        name = item.trim();
+      } else if (item && typeof item === "object") {
+        name = String(item.id || item.name || item.model || "").trim();
+      }
+      if (name && !seen[name]) {
+        seen[name] = true;
+        names.push(name);
+      }
+    });
+
+    return names.sort(function (left, right) {
+      return left.localeCompare(right);
+    });
+  }
+
   function createBrowserFallbackApi() {
     return {
       getConfig: function () {
@@ -5354,8 +5725,8 @@
       sendChat: function () {
         return Promise.reject(new Error("请在 uTools 中运行插件"));
       },
-      fetchModels: function () {
-        return Promise.reject(new Error("请在 uTools 中运行插件"));
+      fetchModels: function (payload) {
+        return fetchModelsInBrowser(payload);
       },
       abortActive: function () {},
       abortChat: function () {},

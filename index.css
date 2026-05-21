@@ -394,10 +394,18 @@ button:disabled {
 }
 
 #copyTaskBtn:disabled,
-#copyTaskBtn:disabled:hover {
+#copyTaskBtn:disabled:hover,
+#speakTaskBtn:disabled,
+#speakTaskBtn:disabled:hover {
   border-color: var(--line);
   background: #ffffff;
   color: var(--muted);
+}
+
+.icon-btn.is-speaking {
+  border-color: #9ccdc3;
+  background: #eef8f5;
+  color: var(--teal-dark);
 }
 
 .icon-btn.is-copied {
