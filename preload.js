@@ -18,6 +18,7 @@ const MAX_ERROR_BODY = 2000;
 const MAX_DOCUMENT_CHARS = 60000;
 const DEFAULT_RECENT_CLIPBOARD_MS = 2000;
 const DEFAULT_CLIPBOARD_POLL_MS = 500;
+const DEFAULT_PROXY_MODE = "system";
 const MODEL_MODES = ["translate", "summary", "explain", "ocr", "chat"];
 const TEXT_EXTENSIONS = [
   "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml",
@@ -34,15 +35,12 @@ const IMAGE_MIME_BY_EXTENSION = {
   bmp: "image/bmp"
 };
 
-let electronSession = null;
 let electronClipboard = null;
 
 try {
   const electron = require("electron");
-  electronSession = electron.session || null;
   electronClipboard = electron.clipboard || null;
 } catch (error) {
-  electronSession = null;
   electronClipboard = null;
 }
 
@@ -202,7 +200,8 @@ async function sendChat(payload, onEvent) {
 }
 
 async function fetchModels(payload) {
-  const provider = normalizeProvider(payload);
+  const config = getConfig();
+  const provider = applyConfigProxy(normalizeProvider(payload), config);
   validateModelFetchProvider(provider);
   const candidates = modelEndpointCandidates(provider.endpoint);
   const errors = [];
@@ -904,21 +903,31 @@ function resolveProvider(config, providerId, modelId, mode) {
   const providers = Array.isArray(config.providers) ? config.providers : [];
   const requested = resolveProviderModel(providers, providerId, modelId, mode);
   if (requested) {
-    return requested;
+    return applyConfigProxy(requested, config);
   }
   const modeSelection = config.modeModels && config.modeModels[mode] ? config.modeModels[mode] : null;
   const modeProvider = modeSelection
     ? resolveProviderModel(providers, modeSelection.providerId, modeSelection.modelId, mode)
     : null;
   if (modeProvider) {
-    return modeProvider;
+    return applyConfigProxy(modeProvider, config);
   }
   const fallback = resolveProviderModel(providers, config.defaultProviderId, config.defaultModelId, mode);
   if (fallback) {
-    return fallback;
+    return applyConfigProxy(fallback, config);
   }
   const first = getFirstProviderModel(providers, mode);
-  return first ? first : null;
+  return first ? applyConfigProxy(first, config) : null;
+}
+
+function applyConfigProxy(provider, config) {
+  if (!provider) {
+    return null;
+  }
+  return Object.assign({}, provider, {
+    proxyMode: normalizeProxyMode(config && config.proxyMode),
+    proxyUrl: typeof (config && config.proxyUrl) === "string" ? config.proxyUrl : ""
+  });
 }
 
 function resolveProviderModel(providers, providerId, modelId, mode) {
@@ -1072,81 +1081,21 @@ async function requestModelText(endpoint, provider) {
 }
 
 async function resolveProxy(provider, targetUrl) {
-  if (provider.proxyMode === "direct") {
+  const mode = normalizeProxyMode(provider && provider.proxyMode);
+
+  if (mode === "direct") {
     return null;
   }
 
-  if (provider.proxyMode === "custom") {
+  if (mode === "custom") {
     return parseProxyUrl(provider.proxyUrl);
   }
 
-  if (provider.proxyMode !== "system") {
+  if (mode !== "system") {
     return null;
   }
 
-  if (electronSession && electronSession.defaultSession) {
-    const rules = await resolveElectronProxy(targetUrl);
-    return parseSystemProxyRules(rules);
-  }
-
   return resolveSystemProxyFromOs(targetUrl);
-}
-
-function resolveElectronProxy(targetUrl) {
-  const session = electronSession.defaultSession;
-  return new Promise((resolve, reject) => {
-    try {
-      const result = session.resolveProxy(targetUrl);
-      if (result && typeof result.then === "function") {
-        result.then(resolve, reject);
-        return;
-      }
-      if (typeof result === "string") {
-        resolve(result);
-        return;
-      }
-      session.resolveProxy(targetUrl, resolve);
-    } catch (error) {
-      try {
-        session.resolveProxy(targetUrl, resolve);
-      } catch (secondError) {
-        reject(secondError);
-      }
-    }
-  });
-}
-
-function parseSystemProxyRules(rules) {
-  const parts = String(rules || "")
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  for (const part of parts) {
-    if (/^DIRECT$/i.test(part)) {
-      continue;
-    }
-
-    const match = part.match(/^([A-Z0-9]+)\s+(.+)$/i);
-    if (!match) {
-      continue;
-    }
-
-    const type = match[1].toUpperCase();
-    const hostPort = match[2].trim();
-
-    if (type === "PROXY" || type === "HTTP") {
-      return parseProxyUrl(`http://${hostPort}`);
-    }
-    if (type === "HTTPS") {
-      return parseProxyUrl(`https://${hostPort}`);
-    }
-    if (type.indexOf("SOCKS") === 0) {
-      throw new Error("当前内置请求器暂不支持 SOCKS 代理，请使用 HTTP 代理");
-    }
-  }
-
-  return null;
 }
 
 function parseProxyUrl(value) {
@@ -1889,6 +1838,8 @@ function normalizeConfig(config) {
     dataDir: normalizeDataDir(source.dataDir),
     recentClipboardMs: normalizeRecentClipboardMs(source.recentClipboardMs),
     clipboardPollingMs: normalizeClipboardPollingMs(source.clipboardPollingMs),
+    proxyMode: normalizeProxyMode(source.proxyMode),
+    proxyUrl: typeof source.proxyUrl === "string" ? source.proxyUrl.trim() : "",
     providers,
     defaultProviderId: providers.length ? defaultProviderId : "",
     defaultModelId: providers.length ? defaultModelId : "",
@@ -1929,6 +1880,12 @@ function normalizeClipboardPollingMs(value) {
   return Math.max(100, Math.min(60000, Math.round(milliseconds)));
 }
 
+function normalizeProxyMode(value) {
+  return ["direct", "system", "custom"].includes(value)
+    ? value
+    : DEFAULT_PROXY_MODE;
+}
+
 function normalizeModeModels(source, providers, fallbackSelection) {
   const result = {};
   for (const mode of MODEL_MODES) {
@@ -1962,10 +1919,6 @@ function normalizeProvider(provider) {
     endpoint: typeof source.endpoint === "string" ? source.endpoint : "",
     apiKey: typeof source.apiKey === "string" ? source.apiKey : "",
     sslVerify: source.sslVerify === true,
-    proxyMode: ["direct", "system", "custom"].includes(source.proxyMode)
-      ? source.proxyMode
-      : "system",
-    proxyUrl: typeof source.proxyUrl === "string" ? source.proxyUrl : "",
     models: normalizeModels(source)
   };
 }

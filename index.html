@@ -197,6 +197,18 @@
                   <span>剪贴板轮询间隔（毫秒）</span>
                   <input id="clipboardPollingInput" type="number" min="100" step="50" />
                 </label>
+                <label class="field">
+                  <span>插件代理</span>
+                  <select id="pluginProxyModeSelect">
+                    <option value="direct">直连模式</option>
+                    <option value="system">系统代理</option>
+                    <option value="custom">自定义代理</option>
+                  </select>
+                </label>
+                <label id="pluginProxyUrlField" class="field" hidden>
+                  <span>自定义代理 URL</span>
+                  <input id="pluginProxyUrlInput" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890" />
+                </label>
               </section>
 
               <section class="providers-section" aria-labelledby="providersTitle">

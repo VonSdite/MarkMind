@@ -8,6 +8,7 @@
   var PROCESSING_PLACEHOLDER = "我正在把想法揉成答案...";
   var DEFAULT_RECENT_CLIPBOARD_MS = 2000;
   var DEFAULT_CLIPBOARD_POLL_MS = 500;
+  var DEFAULT_PROXY_MODE = "system";
   var SEARCH_RESULT_LIMIT = 30;
   var SEARCH_DEBOUNCE_MS = 120;
   var MAX_CHAT_RUNS = 3;
@@ -34,7 +35,9 @@
       modeModels: createEmptyModeModels(),
       dataDir: DEFAULT_DATA_DIR,
       recentClipboardMs: DEFAULT_RECENT_CLIPBOARD_MS,
-      clipboardPollingMs: DEFAULT_CLIPBOARD_POLL_MS
+      clipboardPollingMs: DEFAULT_CLIPBOARD_POLL_MS,
+      proxyMode: DEFAULT_PROXY_MODE,
+      proxyUrl: ""
     },
     draftProviders: [],
     activeTab: "chat",
@@ -135,6 +138,9 @@
     els.dataDirInput = document.getElementById("dataDirInput");
     els.clipboardWindowInput = document.getElementById("clipboardWindowInput");
     els.clipboardPollingInput = document.getElementById("clipboardPollingInput");
+    els.pluginProxyModeSelect = document.getElementById("pluginProxyModeSelect");
+    els.pluginProxyUrlInput = document.getElementById("pluginProxyUrlInput");
+    els.pluginProxyUrlField = document.getElementById("pluginProxyUrlField");
     els.chooseDataDirBtn = document.getElementById("chooseDataDirBtn");
     els.addProviderBtn = document.getElementById("addProviderBtn");
     els.providersList = document.getElementById("providersList");
@@ -254,6 +260,14 @@
       if (event.key === "Enter") {
         event.preventDefault();
         els.clipboardPollingInput.blur();
+      }
+    });
+    els.pluginProxyModeSelect.addEventListener("change", savePluginProxyModeSetting);
+    els.pluginProxyUrlInput.addEventListener("focusout", savePluginProxyUrlSetting);
+    els.pluginProxyUrlInput.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        els.pluginProxyUrlInput.blur();
       }
     });
     els.chooseDataDirBtn.addEventListener("mousedown", function (event) {
@@ -3080,6 +3094,13 @@
         state.config.clipboardPollingMs
       );
     }
+    if (document.activeElement !== els.pluginProxyModeSelect) {
+      els.pluginProxyModeSelect.value = normalizeProxyMode(state.config.proxyMode);
+    }
+    if (document.activeElement !== els.pluginProxyUrlInput) {
+      els.pluginProxyUrlInput.value = normalizeProxyUrl(state.config.proxyUrl);
+    }
+    togglePluginProxyUrlField();
   }
 
   async function saveDataDirSetting() {
@@ -3137,6 +3158,37 @@
     await saveDraftSettings({ showSuccess: true });
   }
 
+  async function savePluginProxyModeSetting() {
+    var previousMode = normalizeProxyMode(state.config.proxyMode);
+    var nextMode = normalizeProxyMode(els.pluginProxyModeSelect.value);
+    state.config.proxyMode = nextMode;
+    togglePluginProxyUrlField();
+    if (previousMode === nextMode) {
+      return;
+    }
+    if (nextMode === "custom" && !normalizeProxyUrl(state.config.proxyUrl)) {
+      return;
+    }
+    await saveDraftSettings({ showSuccess: true });
+  }
+
+  async function savePluginProxyUrlSetting() {
+    var previousUrl = normalizeProxyUrl(state.config.proxyUrl);
+    var nextUrl = normalizeProxyUrl(els.pluginProxyUrlInput.value);
+    els.pluginProxyUrlInput.value = nextUrl;
+    if (previousUrl === nextUrl) {
+      state.config.proxyUrl = nextUrl;
+      return;
+    }
+    state.config.proxyUrl = nextUrl;
+    await saveDraftSettings({ showSuccess: true });
+  }
+
+  function togglePluginProxyUrlField() {
+    var isCustom = normalizeProxyMode(state.config.proxyMode) === "custom";
+    els.pluginProxyUrlField.hidden = !isCustom;
+  }
+
   function renderProviders() {
     var providers = state.draftProviders;
 
@@ -3160,7 +3212,6 @@
   }
 
   function renderProviderCard(provider) {
-    var customProxyHidden = provider.proxyMode === "custom" ? "" : " hidden";
     var models = provider.models || [];
     var expanded = state.expandedProviderIds[provider.id] === true;
     return (
@@ -3199,19 +3250,9 @@
       '<label class="field field-full"><span>API Key</span><input data-field="apiKey" type="password" value="' +
       escapeAttr(provider.apiKey) +
       '" placeholder="可为空" /></label>' +
-      '<label class="field"><span>代理服务</span><select data-field="proxyMode">' +
-      renderOption("direct", "直连", provider.proxyMode) +
-      renderOption("system", "系统代理", provider.proxyMode) +
-      renderOption("custom", "自定义代理", provider.proxyMode) +
-      "</select></label>" +
       '<label class="checkbox-field ssl-field"><input data-field="sslVerify" type="checkbox" ' +
       (provider.sslVerify ? "checked" : "") +
       " />校验 SSL 证书</label>" +
-      '<label class="field field-full custom-proxy-field"' +
-      customProxyHidden +
-      '><span>自定义代理 URL</span><input data-field="proxyUrl" value="' +
-      escapeAttr(provider.proxyUrl) +
-      '" placeholder="http://127.0.0.1:7890" /></label>' +
       '<div class="field-full models-block">' +
       '<div class="models-head"><span>模型</span><div class="models-actions">' +
       '<button class="icon-btn compact-btn" type="button" title="拉取模型" aria-label="拉取模型" data-action="fetch-models" ' +
@@ -3245,18 +3286,6 @@
         );
       })
       .join("");
-  }
-
-  function renderOption(value, label, selectedValue) {
-    return (
-      '<option value="' +
-      escapeAttr(value) +
-      '"' +
-      (selectedValue === value ? " selected" : "") +
-      ">" +
-      escapeHtml(label) +
-      "</option>"
-    );
   }
 
   function handleProviderInput(event) {
@@ -3313,15 +3342,6 @@
       model[modelField] = target.type === "checkbox" ? target.checked : target.value;
     } else {
       provider[field] = target.type === "checkbox" ? target.checked : target.value;
-    }
-
-    if (field === "proxyMode") {
-      var customField = card.querySelector(".custom-proxy-field");
-      if (customField) {
-        var shouldHideProxy = provider.proxyMode !== "custom";
-        customField.hidden = shouldHideProxy;
-        customField.classList.toggle("hidden", shouldHideProxy);
-      }
     }
 
     var nameCell = card.querySelector(".provider-name-cell");
@@ -3689,18 +3709,6 @@
       return;
     }
 
-    if (payload.proxyMode === "custom") {
-      if (!payload.proxyUrl) {
-        showToast("先填写自定义代理 URL");
-        return;
-      }
-      var proxyError = validateProxyUrl(payload.proxyUrl);
-      if (proxyError) {
-        showToast(proxyError);
-        return;
-      }
-    }
-
     state.fetchingModelsProviderId = providerId;
     renderProviders();
     showToast("拉取模型中");
@@ -3766,6 +3774,8 @@
       dataDir: normalizeDataDir(state.config.dataDir),
       recentClipboardMs: normalizeRecentClipboardMs(state.config.recentClipboardMs),
       clipboardPollingMs: normalizeClipboardPollingMs(state.config.clipboardPollingMs),
+      proxyMode: normalizeProxyMode(state.config.proxyMode),
+      proxyUrl: normalizeProxyUrl(state.config.proxyUrl),
       providers: state.draftProviders.map(trimProvider),
       modeModels: cloneModeModels(state.config.modeModels)
     };
@@ -3816,6 +3826,16 @@
   }
 
   function validateConfig(config) {
+    if (normalizeProxyMode(config.proxyMode) === "custom") {
+      if (!normalizeProxyUrl(config.proxyUrl)) {
+        return "先填写插件自定义代理 URL";
+      }
+      var pluginProxyError = validateProxyUrl(config.proxyUrl);
+      if (pluginProxyError) {
+        return "插件代理：" + pluginProxyError;
+      }
+    }
+
     if (!config.providers.length) {
       return "";
     }
@@ -3842,16 +3862,6 @@
         return prefix + "：" + endpointError;
       }
 
-      if (provider.proxyMode === "custom" && !provider.proxyUrl) {
-        return prefix + " 还没填写自定义代理 URL";
-      }
-
-      if (provider.proxyMode === "custom") {
-        var proxyError = validateProxyUrl(provider.proxyUrl);
-        if (proxyError) {
-          return prefix + "：" + proxyError;
-        }
-      }
     }
 
     return "";
@@ -3908,8 +3918,6 @@
       endpoint: typeof source.endpoint === "string" ? source.endpoint : "",
       apiKey: typeof source.apiKey === "string" ? source.apiKey : "",
       sslVerify: false,
-      proxyMode: "system",
-      proxyUrl: "",
       models: Array.isArray(source.models) ? source.models : []
     };
   }
@@ -3937,6 +3945,8 @@
       dataDir: normalizeDataDir(source.dataDir),
       recentClipboardMs: normalizeRecentClipboardMs(source.recentClipboardMs),
       clipboardPollingMs: normalizeClipboardPollingMs(source.clipboardPollingMs),
+      proxyMode: normalizeProxyMode(source.proxyMode),
+      proxyUrl: normalizeProxyUrl(source.proxyUrl),
       providers: providers,
       modeModels: modeModels
     };
@@ -3984,6 +3994,16 @@
     return String(normalizeClipboardPollingMs(value));
   }
 
+  function normalizeProxyMode(value) {
+    return ["direct", "system", "custom"].indexOf(value) >= 0
+      ? value
+      : DEFAULT_PROXY_MODE;
+  }
+
+  function normalizeProxyUrl(value) {
+    return String(value || "").trim();
+  }
+
   function normalizeProvider(provider) {
     var source = provider && typeof provider === "object" ? provider : {};
     return {
@@ -3995,10 +4015,6 @@
       endpoint: typeof source.endpoint === "string" ? source.endpoint : "",
       apiKey: typeof source.apiKey === "string" ? source.apiKey : "",
       sslVerify: source.sslVerify === true,
-      proxyMode: ["direct", "system", "custom"].indexOf(source.proxyMode) >= 0
-        ? source.proxyMode
-        : "system",
-      proxyUrl: typeof source.proxyUrl === "string" ? source.proxyUrl : "",
       models: normalizeModels(source)
     };
   }
@@ -4010,10 +4026,6 @@
       endpoint: String(provider.endpoint || "").trim(),
       apiKey: String(provider.apiKey || "").trim(),
       sslVerify: provider.sslVerify === true,
-      proxyMode: ["direct", "system", "custom"].indexOf(provider.proxyMode) >= 0
-        ? provider.proxyMode
-        : "system",
-      proxyUrl: String(provider.proxyUrl || "").trim(),
       models: (provider.models || []).map(trimModel)
     };
   }

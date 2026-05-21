@@ -1450,12 +1450,26 @@ button:disabled {
   gap: 0;
   width: 100%;
   min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.data-dir-control:focus-within {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(0, 127, 120, 0.13);
 }
 
 .data-dir-control input {
   min-width: 0;
   flex: 1;
-  border-radius: 7px 0 0 7px;
+  border: 0;
+  border-radius: 0;
+}
+
+.data-dir-control input:focus {
+  box-shadow: none;
 }
 
 .data-dir-picker {
@@ -1465,8 +1479,9 @@ button:disabled {
   width: 38px;
   min-width: 38px;
   min-height: 34px;
-  border-left: 0;
-  border-radius: 0 7px 7px 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
   color: var(--muted);
 }
 
