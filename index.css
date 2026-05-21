@@ -265,6 +265,74 @@ button:disabled {
   overflow: auto;
 }
 
+.chat-input-wrap {
+  position: relative;
+}
+
+.chat-slash-menu[hidden] {
+  display: none;
+}
+
+.chat-slash-menu {
+  position: absolute;
+  z-index: 30;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: grid;
+  gap: 3px;
+  max-height: 148px;
+  overflow: auto;
+  border: 1px solid #cfe0db;
+  border-radius: 8px;
+  padding: 4px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(18, 34, 30, 0.16);
+}
+
+.slash-command-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 7px 8px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-command-item:hover,
+.slash-command-item.is-active {
+  border-color: rgba(0, 127, 120, 0.22);
+  background: #eef8f5;
+}
+
+.slash-command-name {
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.slash-command-text {
+  display: grid;
+  min-width: 0;
+}
+
+.slash-command-text strong {
+  display: block;
+  overflow: hidden;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 #inputText:focus,
 #chatInput:focus,
 .field input:focus,
@@ -1150,9 +1218,30 @@ button:disabled {
   background: #fcfdfb;
 }
 
+.message.assistant.is-loading {
+  border-color: rgba(0, 127, 120, 0.28);
+  background:
+    linear-gradient(90deg, rgba(0, 167, 157, 0.06), rgba(244, 166, 42, 0.05), rgba(0, 167, 157, 0.06)),
+    #fcfdfb;
+  background-size: 220% 100%;
+  animation: taskOutputGlow 1.8s ease-in-out infinite;
+}
+
 .message.is-search-hit {
   border-color: #7fc8bd;
   box-shadow: 0 0 0 3px rgba(0, 127, 120, 0.14);
+}
+
+.message-model-meta {
+  max-width: 100%;
+  margin-bottom: 6px;
+  overflow: hidden;
+  color: #60736d;
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .context-clear-divider,
@@ -1267,24 +1356,9 @@ button:disabled {
 .message-loader {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  color: #60736d;
   min-height: 22px;
-}
-
-.message-loader span {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #83908b;
-  animation: messageLoader 900ms ease-in-out infinite;
-}
-
-.message-loader span:nth-child(2) {
-  animation-delay: 140ms;
-}
-
-.message-loader span:nth-child(3) {
-  animation-delay: 280ms;
+  margin-top: 2px;
 }
 
 .message-stats {

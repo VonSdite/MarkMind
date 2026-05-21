@@ -1343,10 +1343,7 @@ function buildUserContent(text, attachments, provider, fallbackText) {
   }
 
   if (images.length && provider.multimodal !== true) {
-    if (!contentText) {
-      throw new Error("当前模型未标识为多模态，无法发送图片");
-    }
-    return contentText;
+    throw new Error("当前模型未标识为多模态，无法发送图片");
   }
 
   if (!images.length || provider.multimodal !== true) {
@@ -2607,6 +2604,10 @@ function normalizeStoredMessage(message) {
     content: typeof message.content === "string" ? message.content : "",
     reasoning: typeof message.reasoning === "string" ? message.reasoning : "",
     cancelled: message.cancelled === true,
+    providerId: typeof message.providerId === "string" ? message.providerId : "",
+    modelId: typeof message.modelId === "string" ? message.modelId : "",
+    providerName: typeof message.providerName === "string" ? message.providerName : "",
+    modelName: typeof message.modelName === "string" ? message.modelName : "",
     usage: normalizeCompletionUsage(message.usage),
     metrics: normalizeStoredMetrics(message.metrics),
     attachments: Array.isArray(message.attachments)

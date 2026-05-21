@@ -154,7 +154,10 @@
                 <div class="mode-model-row">
                   <select id="assistantProviderSelect" class="mode-model-select" aria-label="当前模型"></select>
                 </div>
-                <textarea id="chatInput" spellcheck="false" placeholder="想问什么，悄悄告诉我"></textarea>
+                <div class="chat-input-wrap">
+                  <textarea id="chatInput" spellcheck="false" placeholder="想问什么，悄悄告诉我" aria-controls="chatSlashMenu" aria-expanded="false"></textarea>
+                  <div id="chatSlashMenu" class="chat-slash-menu" role="listbox" hidden></div>
+                </div>
                 <div id="chatAttachments" class="attachment-list"></div>
                 <div class="action-row">
                   <input id="chatFileInput" type="file" multiple hidden />

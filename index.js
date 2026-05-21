@@ -34,6 +34,23 @@
   ];
   var MAX_TEXT_ATTACHMENT_CHARS = 60000;
   var MAX_ATTACHMENTS = 3;
+  var CHAT_SLASH_COMMANDS = [
+    {
+      id: "clear",
+      command: "/clear",
+      title: "清除上下文"
+    },
+    {
+      id: "new",
+      command: "/new",
+      title: "新开对话"
+    },
+    {
+      id: "model",
+      command: "/model",
+      title: "选择模型"
+    }
+  ];
   var api = window.markMind || window.quickEnglish || createBrowserFallbackApi();
   var markdownRenderer = createMarkdownRenderer();
   var state = {
@@ -70,13 +87,17 @@
     chatSearchTimer: 0,
     chatSearchVisibleLimit: SEARCH_RESULT_LIMIT,
     searchHighlightTimer: 0,
+    chatSlashCommands: [],
+    chatSlashCommandIndex: 0,
     confirmResolver: null,
     confirmPreviousFocus: null,
     settingsSaveToken: 0,
     taskSaveTimer: 0,
+    taskSaveToken: 0,
     taskSpeechActive: false,
     taskSpeechText: "",
     taskSpeechUtterance: null,
+    taskRunId: "",
     runningTaskMode: "",
     toastTimer: 0
   };
@@ -149,6 +170,7 @@
     els.assistantPromptInput = document.getElementById("assistantPromptInput");
     els.messagesList = document.getElementById("messagesList");
     els.chatInput = document.getElementById("chatInput");
+    els.chatSlashMenu = document.getElementById("chatSlashMenu");
     els.chatAttachments = document.getElementById("chatAttachments");
     els.chatFileInput = document.getElementById("chatFileInput");
     els.chatAttachBtn = document.getElementById("chatAttachBtn");
@@ -214,6 +236,7 @@
       handleSubmitKeydown(event, startTask);
     });
     els.inputText.addEventListener("input", function () {
+      invalidateActiveTaskResultForInputChange();
       syncActiveTaskFromInput();
       updateContinueChatButton();
     });
@@ -243,8 +266,19 @@
     });
     els.chatAttachments.addEventListener("click", handleAttachmentClick);
     els.chatInput.addEventListener("keydown", function (event) {
+      if (handleChatSlashKeydown(event)) {
+        return;
+      }
       handleSubmitKeydown(event, sendChatMessage);
     });
+    els.chatInput.addEventListener("input", updateChatSlashMenu);
+    els.chatInput.addEventListener("blur", function () {
+      window.setTimeout(closeChatSlashMenu, 120);
+    });
+    els.chatSlashMenu.addEventListener("mousedown", function (event) {
+      event.preventDefault();
+    });
+    els.chatSlashMenu.addEventListener("click", handleChatSlashClick);
     els.chatInput.addEventListener("paste", handleChatPaste);
     els.messagesList.addEventListener("click", handleCodeCopyClick);
     els.resultText.addEventListener("click", handleCodeCopyClick);
@@ -837,6 +871,11 @@
       return;
     }
 
+    if (hasUnsupportedImageAttachments(provider, attachments)) {
+      showToast("当前模型未开启多模态，不能发送图片");
+      return;
+    }
+
     if (mode === "ocr" && !hasImageAttachments(attachments)) {
       showToast("先贴一张图片给 OCR");
       return;
@@ -844,6 +883,8 @@
 
     state.running = true;
     state.runningTaskMode = mode;
+    var runId = createId("task-run");
+    state.taskRunId = runId;
     state.currentResult = "";
     getTaskState(mode).cancelled = false;
     syncTaskResult(mode, "", false);
@@ -864,6 +905,9 @@
           attachments: cloneAttachmentsForRequest(attachments)
         },
         function (event) {
+          if (!isCurrentTaskRun(runId, mode)) {
+            return;
+          }
           if (event && event.type === "error") {
             errorHandled = true;
           }
@@ -871,12 +915,16 @@
         }
       );
     } catch (error) {
-      if (!errorHandled && getErrorMessage(error) !== "请求已取消") {
+      if (isCurrentTaskRun(runId, mode) && !errorHandled && getErrorMessage(error) !== "请求已取消") {
         handleTaskError(error, mode);
       }
     } finally {
+      if (!isCurrentTaskRun(runId, mode)) {
+        return;
+      }
       state.running = false;
       state.runningTaskMode = "";
+      state.taskRunId = "";
       els.sendTaskBtn.disabled = false;
       els.stopTaskBtn.disabled = true;
       if (mode === state.activeTaskMode) {
@@ -886,6 +934,10 @@
       updateContinueChatButton();
       saveTaskStoreQuietly({ immediate: true });
     }
+  }
+
+  function isCurrentTaskRun(runId, mode) {
+    return Boolean(runId && state.taskRunId === runId && state.runningTaskMode === mode);
   }
 
   function handleTaskEvent(event, provider, mode) {
@@ -937,6 +989,7 @@
     var mode = state.runningTaskMode || state.activeTaskMode;
     state.running = false;
     state.runningTaskMode = "";
+    state.taskRunId = "";
     markTaskCancelled(mode, { showToast: settings.showToast });
     if (api.abortActive) {
       api.abortActive();
@@ -1303,7 +1356,7 @@
     session.title = createSessionTitle(text, attachments);
     session.messages = [
       createMessage("user", text, sanitizeAttachmentsForStorage(attachments)),
-      createMessage("assistant", result, [])
+      applyMessageModelMeta(createMessage("assistant", result, []), provider)
     ];
     session.updatedAt = Date.now();
     assistant.activeSessionId = session.id;
@@ -1334,6 +1387,238 @@
     session = createSession();
     assistant.sessions.unshift(session);
     return session;
+  }
+
+  function handleChatSlashKeydown(event) {
+    updateChatSlashMenu();
+    if (!state.chatSlashCommands.length || els.chatSlashMenu.hidden) {
+      return false;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveChatSlashSelection(1);
+      return true;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveChatSlashSelection(-1);
+      return true;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      setChatSlashSelection(0);
+      return true;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      setChatSlashSelection(state.chatSlashCommands.length - 1);
+      return true;
+    }
+
+    if ((event.key === "Enter" && !event.shiftKey && !event.isComposing) || event.key === "Tab") {
+      event.preventDefault();
+      executeSelectedChatSlashCommand();
+      return true;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeChatSlashMenu();
+      return true;
+    }
+
+    return false;
+  }
+
+  function updateChatSlashMenu() {
+    var query = getChatSlashQuery();
+    if (query === null) {
+      closeChatSlashMenu();
+      return;
+    }
+
+    var commands = getMatchingChatSlashCommands(query);
+    if (!commands.length) {
+      closeChatSlashMenu();
+      return;
+    }
+
+    state.chatSlashCommands = commands;
+    if (state.chatSlashCommandIndex >= commands.length) {
+      state.chatSlashCommandIndex = 0;
+    }
+    renderChatSlashMenu();
+  }
+
+  function getChatSlashQuery() {
+    if (!els.chatInput) {
+      return null;
+    }
+
+    var value = els.chatInput.value || "";
+    var selectionStart = typeof els.chatInput.selectionStart === "number"
+      ? els.chatInput.selectionStart
+      : value.length;
+    var selectionEnd = typeof els.chatInput.selectionEnd === "number"
+      ? els.chatInput.selectionEnd
+      : selectionStart;
+    if (selectionStart !== selectionEnd) {
+      return null;
+    }
+
+    var before = value.slice(0, selectionStart);
+    var after = value.slice(selectionStart);
+    if (before.charAt(0) !== "/" || after.trim()) {
+      return null;
+    }
+    if (/\s/.test(before.slice(1))) {
+      return null;
+    }
+    return before.slice(1).toLocaleLowerCase();
+  }
+
+  function getMatchingChatSlashCommands(query) {
+    var value = String(query || "").toLocaleLowerCase();
+    return CHAT_SLASH_COMMANDS.filter(function (item) {
+      var command = item.command.slice(1).toLocaleLowerCase();
+      return command.indexOf(value) === 0 || item.title.toLocaleLowerCase().indexOf(value) >= 0;
+    });
+  }
+
+  function renderChatSlashMenu() {
+    var commands = state.chatSlashCommands || [];
+    if (!commands.length) {
+      closeChatSlashMenu();
+      return;
+    }
+
+    els.chatSlashMenu.hidden = false;
+    els.chatInput.setAttribute("aria-expanded", "true");
+    els.chatSlashMenu.innerHTML = commands
+      .map(function (item, index) {
+        var active = index === state.chatSlashCommandIndex;
+        return (
+          '<button class="slash-command-item' +
+          (active ? " is-active" : "") +
+          '" type="button" role="option" aria-selected="' +
+          (active ? "true" : "false") +
+          '" data-slash-index="' +
+          String(index) +
+          '">' +
+          '<span class="slash-command-name">' +
+          escapeHtml(item.command) +
+          "</span>" +
+          '<span class="slash-command-text">' +
+          '<strong>' +
+          escapeHtml(item.title) +
+          "</strong>" +
+          "</span>" +
+          "</button>"
+        );
+      })
+      .join("");
+
+    var activeItem = els.chatSlashMenu.querySelector(".slash-command-item.is-active");
+    if (activeItem) {
+      activeItem.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function closeChatSlashMenu() {
+    state.chatSlashCommands = [];
+    state.chatSlashCommandIndex = 0;
+    if (els.chatSlashMenu) {
+      els.chatSlashMenu.hidden = true;
+      els.chatSlashMenu.innerHTML = "";
+    }
+    if (els.chatInput) {
+      els.chatInput.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function moveChatSlashSelection(delta) {
+    setChatSlashSelection(state.chatSlashCommandIndex + delta);
+  }
+
+  function setChatSlashSelection(index) {
+    var commands = state.chatSlashCommands || [];
+    if (!commands.length) {
+      return;
+    }
+    state.chatSlashCommandIndex = (index + commands.length) % commands.length;
+    renderChatSlashMenu();
+  }
+
+  function handleChatSlashClick(event) {
+    var item = event.target.closest("[data-slash-index]");
+    if (!item) {
+      return;
+    }
+    setChatSlashSelection(Number(item.dataset.slashIndex) || 0);
+    executeSelectedChatSlashCommand();
+  }
+
+  function executeSelectedChatSlashCommand() {
+    var command = state.chatSlashCommands[state.chatSlashCommandIndex];
+    if (!command) {
+      return;
+    }
+    executeChatSlashCommand(command.id);
+  }
+
+  function executeChatSlashCommandFromInput() {
+    var value = String(els.chatInput.value || "").trim().toLocaleLowerCase();
+    var command = CHAT_SLASH_COMMANDS.find(function (item) {
+      return item.command === value;
+    });
+    if (!command) {
+      return false;
+    }
+
+    executeChatSlashCommand(command.id);
+    return true;
+  }
+
+  function executeChatSlashCommand(commandId) {
+    els.chatInput.value = "";
+    closeChatSlashMenu();
+
+    if (commandId === "clear") {
+      clearChatContext();
+      els.chatInput.focus();
+      return;
+    }
+
+    if (commandId === "new") {
+      createNewSession();
+      return;
+    }
+
+    if (commandId === "model") {
+      openChatModelSelect();
+    }
+  }
+
+  function openChatModelSelect() {
+    renderChatModelSelect();
+    if (!els.assistantProviderSelect || els.assistantProviderSelect.disabled) {
+      showToast("没有可选模型");
+      els.chatInput.focus();
+      return;
+    }
+
+    els.assistantProviderSelect.focus();
+    if (typeof els.assistantProviderSelect.showPicker === "function") {
+      try {
+        els.assistantProviderSelect.showPicker();
+      } catch (error) {
+        // Some embedded runtimes only allow focusing native selects.
+      }
+    }
   }
 
   async function chooseAttachmentFiles(target) {
@@ -1436,9 +1721,38 @@
     }
 
     state.taskAttachments = state.taskAttachments.concat(nextAttachments);
+    invalidateActiveTaskResultForInputChange();
     renderAttachments("task");
     updateContinueChatButton();
-    syncActiveTaskFromInput();
+    syncActiveTaskFromInput({ immediate: true });
+  }
+
+  function invalidateActiveTaskResultForInputChange() {
+    var activeRunning = state.running && state.runningTaskMode === state.activeTaskMode;
+    var taskState = getActiveTaskState();
+
+    if (!activeRunning && !state.currentResult && !taskState.cancelled) {
+      return;
+    }
+
+    if (activeRunning) {
+      state.running = false;
+      state.runningTaskMode = "";
+      state.taskRunId = "";
+      if (api.abortActive) {
+        api.abortActive();
+      }
+      els.sendTaskBtn.disabled = false;
+      els.stopTaskBtn.disabled = true;
+    }
+
+    stopTaskSpeech();
+    state.currentResult = "";
+    taskState.result = "";
+    taskState.cancelled = false;
+    renderTaskPlaceholder(EMPTY_RESULT_PLACEHOLDER);
+    els.copyTaskBtn.disabled = true;
+    updateContinueChatButton();
   }
 
   async function addFiles(target, fileList) {
@@ -1484,6 +1798,10 @@
     return (attachments || []).some(function (attachment) {
       return attachment.kind === "image" && attachment.dataUrl;
     });
+  }
+
+  function hasUnsupportedImageAttachments(provider, attachments) {
+    return hasImageAttachments(attachments) && (!provider || provider.multimodal !== true);
   }
 
   function isOcrTaskMode() {
@@ -1679,9 +1997,10 @@
       state.taskAttachments = state.taskAttachments.filter(function (attachment) {
         return attachment.id !== id;
       });
+      invalidateActiveTaskResultForInputChange();
       renderAttachments("task");
       updateContinueChatButton();
-      syncActiveTaskFromInput();
+      syncActiveTaskFromInput({ immediate: true });
       return;
     }
 
@@ -1762,14 +2081,15 @@
     els.imagePreviewImg.alt = "";
   }
 
-  function renderChat() {
+  function renderChat(options) {
+    var settings = options || {};
     ensureActiveAssistantAndSession();
     renderAssistantPanelState();
     renderAssistants();
     renderAssistantEditor();
     renderChatModelSelect();
     renderSessions();
-    renderMessages();
+    renderMessages({ preserveScroll: settings.preserveScroll === true });
     renderChatRunControls();
   }
 
@@ -1961,7 +2281,10 @@
       .join("");
   }
 
-  function renderMessages() {
+  function renderMessages(options) {
+    var settings = options || {};
+    var shouldStickToBottom = settings.preserveScroll ? isMessagesNearBottom() : true;
+    var previousScrollTop = els.messagesList.scrollTop;
     var session = getActiveSession();
     if (!session) {
       els.messagesList.innerHTML = "";
@@ -1973,7 +2296,11 @@
         return renderMessage(message);
       })
       .join("");
-    els.messagesList.scrollTop = els.messagesList.scrollHeight;
+    if (shouldStickToBottom) {
+      scrollMessagesToBottom();
+    } else {
+      els.messagesList.scrollTop = previousScrollTop;
+    }
   }
 
   function openChatSearch() {
@@ -2316,6 +2643,7 @@
       ? renderMarkdown(message.content || "")
       : renderPlainText(message.content || "");
     var contentClass = isAssistant ? "message-content markdown-body" : "message-content";
+    var modelMetaHtml = isAssistant ? renderMessageModelMeta(message) : "";
     var reasoningHtml = isAssistant ? renderReasoningBlock(message) : "";
     var loadingHtml = isAssistant && message.loading ? renderMessageLoader() : "";
     var cancelledHtml = isAssistant && message.cancelled ? renderCancelDivider() : "";
@@ -2349,6 +2677,7 @@
       '" data-message-id="' +
       escapeAttr(message.id) +
       '">' +
+      modelMetaHtml +
       reasoningHtml +
       '<div class="' +
       contentClass +
@@ -2428,6 +2757,34 @@
       "<span></span>" +
       "</div>"
     );
+  }
+
+  function renderMessageModelMeta(message) {
+    var label = getMessageModelLabel(message);
+    if (!label) {
+      return "";
+    }
+
+    return (
+      '<div class="message-model-meta" title="' +
+      escapeAttr(label) +
+      '">' +
+      escapeHtml(label) +
+      "</div>"
+    );
+  }
+
+  function getMessageModelLabel(message) {
+    if (!message || message.role !== "assistant") {
+      return "";
+    }
+
+    var providerName = String(message.providerName || "").trim();
+    var modelName = String(message.modelName || "").trim();
+    if (providerName && modelName) {
+      return providerName + " / " + modelName;
+    }
+    return modelName || providerName;
   }
 
   function renderReasoningBlock(message) {
@@ -2558,7 +2915,10 @@
   function renderMessageLoader() {
     return (
       '<div class="message-loader" aria-label="正在生成">' +
-      "<span></span><span></span><span></span>" +
+      '<span class="task-waiting">' +
+      '<span class="task-loader" aria-hidden="true"><span></span><span></span><span></span></span>' +
+      '<span class="result-placeholder">正在生成</span>' +
+      "</span>" +
       "</div>"
     );
   }
@@ -2720,8 +3080,9 @@
       return;
     }
 
-    if (state.running) {
-      stopActiveRequest();
+    var run = getChatRunForSession(session.id);
+    if (run) {
+      abortChatRun(run.requestId, { showToast: false });
     }
 
     var lastMessage = session.messages[session.messages.length - 1];
@@ -2769,6 +3130,10 @@
   }
 
   async function sendChatMessage() {
+    if (executeChatSlashCommandFromInput()) {
+      return;
+    }
+
     ensureActiveAssistantAndSession();
     var assistant = getActiveAssistant();
     var provider = getChatProvider(assistant);
@@ -2784,6 +3149,11 @@
     if (!provider) {
       showToast("先配置一个模型");
       setTab("settings");
+      return;
+    }
+
+    if (hasUnsupportedImageAttachments(provider, attachments)) {
+      showToast("当前模型未开启多模态，不能发送图片");
       return;
     }
 
@@ -2812,6 +3182,7 @@
     var apiMessages = getMessagesAfterLastContextClear(session.messages).map(cloneMessage);
     apiMessages[apiMessages.length - 1] = userMessageForApi;
     var assistantMessage = createMessage("assistant", "", []);
+    applyMessageModelMeta(assistantMessage, provider);
     assistantMessage.loading = true;
     initializeAssistantTelemetry(assistantMessage);
     session.messages.push(assistantMessage);
@@ -2855,6 +3226,9 @@
           }
         },
         function (event) {
+          if (!isCurrentChatRun(run)) {
+            return;
+          }
           if (event && event.type === "error") {
             errorHandled = true;
           }
@@ -2862,7 +3236,7 @@
         }
       );
     } catch (error) {
-      if (!errorHandled && !isCancelErrorMessage(getErrorMessage(error))) {
+      if (isCurrentChatRun(run) && !errorHandled && !isCancelErrorMessage(getErrorMessage(error))) {
         assistantMessage.loading = false;
         assistantMessage._failed = true;
         assistantMessage.cancelled = false;
@@ -2871,6 +3245,9 @@
       }
     } finally {
       window.clearInterval(telemetryTimer);
+      if (!isCurrentChatRun(run)) {
+        return;
+      }
       flushAssistantThinkState(assistantMessage);
       finalizeAssistantTelemetry(assistantMessage, apiMessages);
       assistantMessage.loading = false;
@@ -2947,7 +3324,7 @@
 
   function renderChatAfterRunChange(run) {
     if (isChatRunVisible(run)) {
-      renderChat();
+      renderChat({ preserveScroll: true });
       return;
     }
     if (run && getActiveAssistant() && getActiveAssistant().id === run.assistantId) {
@@ -2998,6 +3375,10 @@
       }
     }
     return null;
+  }
+
+  function isCurrentChatRun(run) {
+    return Boolean(run && state.chatRuns && state.chatRuns[run.requestId] === run);
   }
 
   function countActiveChatRuns() {
@@ -3287,9 +3668,11 @@
   function updateRenderedMessage(message) {
     var node = els.messagesList.querySelector('[data-message-id="' + cssEscape(message.id) + '"]');
     if (!node) {
-      renderMessages();
+      renderMessages({ preserveScroll: true });
       return;
     }
+    var shouldStickToBottom = isMessagesNearBottom();
+    var previousScrollTop = els.messagesList.scrollTop;
     var wasReasoningOpen = Boolean(node.querySelector(".reasoning-block[open]"));
     node.outerHTML = renderMessage(message);
     var nextNode = els.messagesList.querySelector('[data-message-id="' + cssEscape(message.id) + '"]');
@@ -3302,6 +3685,21 @@
       }
       scrollReasoningToLatest(nextNode);
     }
+    if (shouldStickToBottom) {
+      scrollMessagesToBottom();
+    } else {
+      els.messagesList.scrollTop = previousScrollTop;
+    }
+  }
+
+  function isMessagesNearBottom() {
+    if (!els.messagesList) {
+      return true;
+    }
+    return els.messagesList.scrollHeight - els.messagesList.scrollTop - els.messagesList.clientHeight <= 32;
+  }
+
+  function scrollMessagesToBottom() {
     els.messagesList.scrollTop = els.messagesList.scrollHeight;
   }
 
@@ -3357,11 +3755,27 @@
       content: content || "",
       reasoning: "",
       cancelled: false,
+      providerId: "",
+      modelId: "",
+      providerName: "",
+      modelName: "",
       usage: null,
       metrics: null,
       attachments: attachments || [],
       createdAt: Date.now()
     };
+  }
+
+  function applyMessageModelMeta(message, provider) {
+    if (!message || !provider) {
+      return message;
+    }
+
+    message.providerId = provider.id || "";
+    message.modelId = provider.modelId || "";
+    message.providerName = provider.name || "";
+    message.modelName = provider.model || "";
+    return message;
   }
 
   function createContextClearMessage() {
@@ -3372,6 +3786,10 @@
       content: "",
       reasoning: "",
       cancelled: false,
+      providerId: "",
+      modelId: "",
+      providerName: "",
+      modelName: "",
       usage: null,
       metrics: null,
       attachments: [],
@@ -3623,22 +4041,27 @@
 
   function saveTaskStoreQuietly(options) {
     var settings = Object.assign({ immediate: false, showError: false }, options || {});
+    var saveToken = state.taskSaveToken + 1;
+    state.taskSaveToken = saveToken;
     window.clearTimeout(state.taskSaveTimer);
 
     if (settings.immediate) {
-      return doSaveTaskStoreQuietly(settings);
+      return doSaveTaskStoreQuietly(settings, saveToken);
     }
 
     state.taskSaveTimer = window.setTimeout(function () {
-      doSaveTaskStoreQuietly(settings);
+      doSaveTaskStoreQuietly(settings, saveToken);
     }, 250);
     return Promise.resolve();
   }
 
-  async function doSaveTaskStoreQuietly(options) {
+  async function doSaveTaskStoreQuietly(options, saveToken) {
     try {
       if (api.saveTaskStore) {
-        state.taskStore = normalizeTaskStore(await api.saveTaskStore(state.taskStore));
+        var savedStore = normalizeTaskStore(await api.saveTaskStore(normalizeTaskStore(state.taskStore)));
+        if (saveToken === state.taskSaveToken) {
+          state.taskStore = savedStore;
+        }
       }
     } catch (error) {
       if (options && options.showError) {
@@ -4776,6 +5199,10 @@
       content: typeof message.content === "string" ? message.content : "",
       reasoning: typeof message.reasoning === "string" ? message.reasoning : "",
       cancelled: message.cancelled === true,
+      providerId: typeof message.providerId === "string" ? message.providerId : "",
+      modelId: typeof message.modelId === "string" ? message.modelId : "",
+      providerName: typeof message.providerName === "string" ? message.providerName : "",
+      modelName: typeof message.modelName === "string" ? message.modelName : "",
       usage: normalizeMessageUsage(message.usage),
       metrics: normalizeMessageMetrics(message.metrics),
       attachments: Array.isArray(message.attachments)
