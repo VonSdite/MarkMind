@@ -87,6 +87,7 @@
     chatSearchTimer: 0,
     chatSearchVisibleLimit: SEARCH_RESULT_LIMIT,
     searchHighlightTimer: 0,
+    chatSlashMode: "",
     chatSlashCommands: [],
     chatSlashCommandIndex: 0,
     confirmResolver: null,
@@ -280,6 +281,7 @@
     });
     els.chatSlashMenu.addEventListener("click", handleChatSlashClick);
     els.chatInput.addEventListener("paste", handleChatPaste);
+    els.messagesList.addEventListener("click", handleReasoningSummaryClick);
     els.messagesList.addEventListener("click", handleCodeCopyClick);
     els.resultText.addEventListener("click", handleCodeCopyClick);
     els.chatSearchBtn.addEventListener("click", openChatSearch);
@@ -1390,7 +1392,9 @@
   }
 
   function handleChatSlashKeydown(event) {
-    updateChatSlashMenu();
+    if (state.chatSlashMode !== "model") {
+      updateChatSlashMenu();
+    }
     if (!state.chatSlashCommands.length || els.chatSlashMenu.hidden) {
       return false;
     }
@@ -1431,10 +1435,17 @@
       return true;
     }
 
+    if (state.chatSlashMode === "model") {
+      closeChatSlashMenu();
+    }
     return false;
   }
 
   function updateChatSlashMenu() {
+    if (state.chatSlashMode === "model") {
+      closeChatSlashMenu();
+    }
+
     var query = getChatSlashQuery();
     if (query === null) {
       closeChatSlashMenu();
@@ -1447,6 +1458,7 @@
       return;
     }
 
+    state.chatSlashMode = "command";
     state.chatSlashCommands = commands;
     if (state.chatSlashCommandIndex >= commands.length) {
       state.chatSlashCommandIndex = 0;
@@ -1483,10 +1495,14 @@
 
   function getMatchingChatSlashCommands(query) {
     var value = String(query || "").toLocaleLowerCase();
-    return CHAT_SLASH_COMMANDS.filter(function (item) {
-      var command = item.command.slice(1).toLocaleLowerCase();
-      return command.indexOf(value) === 0 || item.title.toLocaleLowerCase().indexOf(value) >= 0;
-    });
+    return CHAT_SLASH_COMMANDS
+      .filter(function (item) {
+        var command = item.command.slice(1).toLocaleLowerCase();
+        return command.indexOf(value) === 0 || item.title.toLocaleLowerCase().indexOf(value) >= 0;
+      })
+      .map(function (item) {
+        return Object.assign({ kind: "command" }, item);
+      });
   }
 
   function renderChatSlashMenu() {
@@ -1501,16 +1517,18 @@
     els.chatSlashMenu.innerHTML = commands
       .map(function (item, index) {
         var active = index === state.chatSlashCommandIndex;
+        var currentClass = item.current ? " is-current" : "";
         return (
           '<button class="slash-command-item' +
           (active ? " is-active" : "") +
+          currentClass +
           '" type="button" role="option" aria-selected="' +
           (active ? "true" : "false") +
           '" data-slash-index="' +
           String(index) +
           '">' +
           '<span class="slash-command-name">' +
-          escapeHtml(item.command) +
+          escapeHtml(item.command || "") +
           "</span>" +
           '<span class="slash-command-text">' +
           '<strong>' +
@@ -1529,6 +1547,7 @@
   }
 
   function closeChatSlashMenu() {
+    state.chatSlashMode = "";
     state.chatSlashCommands = [];
     state.chatSlashCommandIndex = 0;
     if (els.chatSlashMenu) {
@@ -1565,6 +1584,10 @@
   function executeSelectedChatSlashCommand() {
     var command = state.chatSlashCommands[state.chatSlashCommandIndex];
     if (!command) {
+      return;
+    }
+    if (command.kind === "model") {
+      selectChatSlashModel(command);
       return;
     }
     executeChatSlashCommand(command.id);
@@ -1604,20 +1627,63 @@
   }
 
   function openChatModelSelect() {
+    ensureActiveAssistantAndSession();
     renderChatModelSelect();
-    if (!els.assistantProviderSelect || els.assistantProviderSelect.disabled) {
+
+    var models = getChatModelSlashCommands();
+    if (!models.length) {
       showToast("没有可选模型");
       els.chatInput.focus();
       return;
     }
 
-    els.assistantProviderSelect.focus();
-    if (typeof els.assistantProviderSelect.showPicker === "function") {
-      try {
-        els.assistantProviderSelect.showPicker();
-      } catch (error) {
-        // Some embedded runtimes only allow focusing native selects.
-      }
+    var selectedIndex = models.findIndex(function (item) {
+      return item.current;
+    });
+    state.chatSlashMode = "model";
+    state.chatSlashCommands = models;
+    state.chatSlashCommandIndex = selectedIndex >= 0 ? selectedIndex : 0;
+    renderChatSlashMenu();
+    els.chatInput.focus();
+  }
+
+  function getChatModelSlashCommands() {
+    var providers = state.config.providers || [];
+    var currentValue = els.assistantProviderSelect ? els.assistantProviderSelect.value : "";
+    var items = [];
+
+    providers.forEach(function (provider) {
+      (provider.models || []).forEach(function (model) {
+        if (!modelAllowedForMode(model, "chat")) {
+          return;
+        }
+
+        var value = formatModelValue(provider.id, model.id);
+        items.push({
+          kind: "model",
+          id: "model",
+          value: value,
+          command: value === currentValue ? "当前" : "模型",
+          title: (provider.name || "未命名 provider") + " / " + (model.model || "未设置模型"),
+          current: value === currentValue
+        });
+      });
+    });
+
+    return items;
+  }
+
+  function selectChatSlashModel(command) {
+    if (!command || !command.value) {
+      return;
+    }
+
+    updateModeModel("chat", command.value);
+    closeChatSlashMenu();
+    els.chatInput.focus();
+    var provider = getChatProvider(getActiveAssistant());
+    if (provider) {
+      showToast("已切换模型：" + (provider.name || "未命名 provider") + " / " + (provider.model || "未设置模型"));
     }
   }
 
@@ -2802,8 +2868,11 @@
       : thinkingText
         ? "已思考 " + thinkingText
         : "思考过程";
+    var openAttr = message._reasoningOpen ? " open" : "";
     return (
-      '<details class="reasoning-block">' +
+      '<details class="reasoning-block"' +
+      openAttr +
+      ">" +
       "<summary>" +
       '<span class="reasoning-title">' +
       (message.loading ? '<span class="reasoning-pulse" aria-hidden="true"></span>' : "") +
@@ -2812,12 +2881,34 @@
       '<span class="reasoning-preview" data-reasoning-preview>' +
       escapeHtml(createReasoningPreview(reasoning)) +
       "</span>" +
+      '<span class="reasoning-toggle-icon" aria-hidden="true"></span>' +
       "</summary>" +
       '<div class="reasoning-content markdown-body">' +
       renderMarkdown(reasoning) +
       "</div>" +
       "</details>"
     );
+  }
+
+  function handleReasoningSummaryClick(event) {
+    var summary = event.target.closest(".reasoning-block > summary");
+    if (!summary || !els.messagesList.contains(summary)) {
+      return;
+    }
+
+    event.preventDefault();
+    var details = summary.parentElement;
+    var messageNode = summary.closest("[data-message-id]");
+    var message = messageNode ? findMessageById(getActiveSession(), messageNode.dataset.messageId) : null;
+    var nextOpen = !details.open;
+
+    details.open = nextOpen;
+    if (message) {
+      message._reasoningOpen = nextOpen;
+    }
+    if (nextOpen && messageNode) {
+      scrollReasoningToLatest(messageNode);
+    }
   }
 
   function renderMessageStats(message) {
@@ -3674,6 +3765,7 @@
     var shouldStickToBottom = isMessagesNearBottom();
     var previousScrollTop = els.messagesList.scrollTop;
     var wasReasoningOpen = Boolean(node.querySelector(".reasoning-block[open]"));
+    message._reasoningOpen = wasReasoningOpen;
     node.outerHTML = renderMessage(message);
     var nextNode = els.messagesList.querySelector('[data-message-id="' + cssEscape(message.id) + '"]');
     if (nextNode) {
