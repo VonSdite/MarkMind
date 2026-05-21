@@ -379,6 +379,32 @@ button:disabled {
   background: #f7faf8;
 }
 
+.send-action-btn {
+  border-color: transparent;
+  background: var(--teal);
+  color: #ffffff;
+}
+
+.send-action-btn:hover {
+  border-color: transparent;
+  background: var(--teal-dark);
+  color: #ffffff;
+}
+
+.stop-action-btn {
+  border-color: rgba(179, 59, 50, 0.24);
+  background: #fff5f3;
+  color: var(--rose);
+}
+
+.stop-action-btn:hover {
+  background: #ffece8;
+}
+
+.clear-action-btn {
+  color: var(--ink);
+}
+
 #copyTaskBtn:disabled,
 #copyTaskBtn:disabled:hover {
   border-color: var(--line);
@@ -1368,15 +1394,6 @@ button:disabled {
   border-top: 1px solid var(--line);
 }
 
-.clear-context-btn {
-  color: var(--muted);
-}
-
-.clear-context-btn:hover {
-  background: #f3f1ea;
-  color: var(--ink);
-}
-
 .tool-icon {
   display: block;
   fill: none;
@@ -1485,9 +1502,13 @@ button:disabled {
 .field .data-dir-control input {
   min-width: 0;
   flex: 1;
+  height: 36px;
+  min-height: 36px;
+  padding: 3px 10px 5px;
   border: 0;
   border-radius: 0;
   background: transparent;
+  line-height: 20px;
 }
 
 .field .data-dir-control input:focus {
@@ -1501,7 +1522,7 @@ button:disabled {
   place-items: center;
   width: 38px;
   min-width: 38px;
-  min-height: 34px;
+  min-height: 36px;
   border: 0;
   border-left: 1px solid var(--line);
   border-radius: 0;
