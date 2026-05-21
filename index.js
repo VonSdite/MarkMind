@@ -409,8 +409,8 @@
       if (payload.text) {
         els.chatInput.value = payload.text;
       }
-      if (payload.image) {
-        addPreparedAttachments("chat", [payload.image]);
+      if (payload.images.length) {
+        addPreparedAttachments("chat", payload.images);
       }
       window.setTimeout(function () {
         els.chatInput.focus();
@@ -418,7 +418,7 @@
       return;
     }
 
-    if (payload.text || payload.image) {
+    if (payload.text || payload.images.length) {
       state.taskAttachments = [];
       state.currentResult = "";
       els.inputText.value = "";
@@ -433,8 +433,8 @@
       els.inputText.value = payload.text;
       syncActiveTaskFromInput();
     }
-    var addedImages = payload.image ? addPreparedAttachments("task", [payload.image]) : 0;
-    if (payload.text || addedImages) {
+    var addedImages = payload.images.length ? addPreparedAttachments("task", payload.images) : 0;
+    if (addedImages || (payload.text && tab !== "ocr")) {
       startTask();
       return;
     }
@@ -583,17 +583,11 @@
 
   async function getEnterPayload(action, tab) {
     var selectedText = action.type === "over" ? extractPayloadText(action.payload) : "";
-    var selectedImage = action.type === "img" ? await readActionImage(action.payload) : null;
-    if (tab === "ocr") {
-      return {
-        text: "",
-        image: selectedImage || (selectedText ? null : await readRecentClipboardImage())
-      };
-    }
-    var image = selectedImage || (selectedText ? null : await readRecentClipboardImage());
+    var selectedImages = action.type === "img" ? await readActionImages(action.payload) : [];
+    var images = selectedImages.length ? selectedImages : (selectedText ? [] : await readRecentClipboardImages());
     return {
       text: selectedText || (await readRecentClipboardText()),
-      image: image
+      images: images
     };
   }
 
@@ -609,26 +603,32 @@
     }
   }
 
-  async function readRecentClipboardImage() {
-    if (!api.getRecentClipboardImage) {
-      return null;
+  async function readRecentClipboardImages() {
+    if (!api.getRecentClipboardImages && !api.getRecentClipboardImage) {
+      return [];
     }
     try {
       var maxAgeMs = normalizeRecentClipboardMs(state.config.recentClipboardMs);
-      return normalizePreparedAttachment(await api.getRecentClipboardImage(maxAgeMs));
+      var attachments = api.getRecentClipboardImages
+        ? await api.getRecentClipboardImages(maxAgeMs)
+        : [await api.getRecentClipboardImage(maxAgeMs)];
+      return normalizePreparedAttachments(attachments);
     } catch (error) {
-      return null;
+      return [];
     }
   }
 
-  async function readActionImage(payload) {
-    if (!api.readImageAttachment) {
-      return null;
+  async function readActionImages(payload) {
+    if (!api.readImageAttachments && !api.readImageAttachment) {
+      return [];
     }
     try {
-      return normalizePreparedAttachment(await api.readImageAttachment(payload));
+      var attachments = api.readImageAttachments
+        ? await api.readImageAttachments(payload)
+        : [await api.readImageAttachment(payload)];
+      return normalizePreparedAttachments(attachments);
     } catch (error) {
-      return null;
+      return [];
     }
   }
 
@@ -1145,6 +1145,10 @@
       text: kind === "document" ? String(attachment.text || "") : "",
       dataUrl: kind === "image" ? String(attachment.dataUrl || "") : ""
     };
+  }
+
+  function normalizePreparedAttachments(attachments) {
+    return (attachments || []).map(normalizePreparedAttachment).filter(Boolean);
   }
 
   function appendAttachments(target, nextAttachments) {
@@ -5332,8 +5336,14 @@
       getRecentClipboardImage: function () {
         return null;
       },
+      getRecentClipboardImages: function () {
+        return [];
+      },
       readImageAttachment: function () {
         return null;
+      },
+      readImageAttachments: function () {
+        return [];
       },
       runTask: function () {
         return Promise.reject(new Error("请在 uTools 中运行插件"));

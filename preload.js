@@ -124,7 +124,9 @@ window.markMind = {
   getClipboardText,
   getRecentClipboardText,
   getRecentClipboardImage,
+  getRecentClipboardImages,
   readImageAttachment,
+  readImageAttachments,
   chooseDataDirectory,
   chooseAttachmentFiles,
   onEnter(listener) {
@@ -472,62 +474,107 @@ function getRecentClipboardImage(maxAgeMs) {
   return clipboardSnapshotImage ? Object.assign({}, clipboardSnapshotImage) : null;
 }
 
+function getRecentClipboardImages(maxAgeMs) {
+  const image = getRecentClipboardImage(maxAgeMs);
+  return image ? [image] : [];
+}
+
 async function readImageAttachment(payload) {
-  const dataUrlAttachment = extractImageDataUrlPayload(payload);
-  if (dataUrlAttachment) {
-    return dataUrlAttachment;
+  const attachments = await readImageAttachments(payload);
+  return attachments[0] || null;
+}
+
+async function readImageAttachments(payload) {
+  const attachments = extractImageDataUrlPayloads(payload);
+  const filePaths = uniqueValues(extractImagePayloadPaths(payload).map(normalizeLocalPayloadPath));
+
+  for (const filePath of filePaths) {
+    try {
+      const attachment = await readLocalAttachmentFile(filePath);
+      if (attachment && attachment.kind === "image") {
+        attachments.push(attachment);
+      }
+    } catch (error) {
+      // Keep processing other payload entries.
+    }
   }
 
-  const filePath = normalizeLocalPayloadPath(extractImagePayloadPath(payload));
-  if (filePath) {
-    const attachment = await readLocalAttachmentFile(filePath);
-    return attachment && attachment.kind === "image" ? attachment : null;
+  if (attachments.length) {
+    return attachments;
   }
 
-  return safeReadClipboardImage();
+  const image = safeReadClipboardImage();
+  return image ? [image] : [];
 }
 
 function extractImageDataUrlPayload(payload) {
-  if (typeof payload === "string" && /^data:image\//i.test(payload)) {
-    return {
-      id: createStorageId("file"),
-      kind: "image",
-      name: "image.png",
-      mime: getDataUrlMime(payload) || "image/png",
-      size: estimateDataUrlBytes(payload),
-      dataUrl: payload
-    };
+  return extractImageDataUrlPayloads(payload)[0] || null;
+}
+
+function extractImageDataUrlPayloads(payload) {
+  const attachments = [];
+
+  function visit(value) {
+    if (typeof value === "string" && /^data:image\//i.test(value)) {
+      attachments.push({
+        id: createStorageId("file"),
+        kind: "image",
+        name: "image.png",
+        mime: getDataUrlMime(value) || "image/png",
+        size: estimateDataUrlBytes(value),
+        dataUrl: value
+      });
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    if (value && typeof value === "object") {
+      visit(value.dataUrl);
+      visit(value.dataURL);
+      visit(value.url);
+      visit(value.images);
+      visit(value.items);
+      visit(value.files);
+      visit(value.payload);
+    }
   }
 
-  if (payload && typeof payload === "object" && typeof payload.dataUrl === "string") {
-    return extractImageDataUrlPayload(payload.dataUrl);
-  }
-
-  return null;
+  visit(payload);
+  return attachments;
 }
 
 function extractImagePayloadPath(payload) {
-  if (typeof payload === "string") {
-    return payload;
-  }
-  if (Array.isArray(payload)) {
-    for (const item of payload) {
-      const filePath = extractImagePayloadPath(item);
-      if (filePath) {
-        return filePath;
+  return extractImagePayloadPaths(payload)[0] || "";
+}
+
+function extractImagePayloadPaths(payload) {
+  const filePaths = [];
+
+  function visit(value) {
+    if (typeof value === "string") {
+      if (!/^data:image\//i.test(value)) {
+        filePaths.push(value);
       }
+      return;
     }
-    return "";
-  }
-  if (payload && typeof payload === "object") {
-    const candidates = [payload.path, payload.filePath, payload.file, payload.url];
-    for (const candidate of candidates) {
-      if (typeof candidate === "string" && candidate) {
-        return candidate;
-      }
+
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    if (value && typeof value === "object") {
+      [value.path, value.filePath, value.file, value.url].forEach(visit);
+      [value.paths, value.filePaths, value.files, value.images, value.items, value.list, value.payload].forEach(visit);
     }
   }
-  return "";
+
+  visit(payload);
+  return filePaths;
 }
 
 function normalizeLocalPayloadPath(value) {
@@ -604,12 +651,6 @@ function safeReadClipboardImage() {
     if (!electronClipboard || typeof electronClipboard.readImage !== "function") {
       return null;
     }
-    if (typeof electronClipboard.availableFormats === "function") {
-      const formats = electronClipboard.availableFormats();
-      if (!isSingleClipboardImageCandidate(formats)) {
-        return null;
-      }
-    }
     const image = electronClipboard.readImage();
     if (!image || (typeof image.isEmpty === "function" && image.isEmpty())) {
       return null;
@@ -631,35 +672,6 @@ function safeReadClipboardImage() {
     };
   } catch (error) {
     return null;
-  }
-}
-
-function isSingleClipboardImageCandidate(formats) {
-  const normalized = (Array.isArray(formats) ? formats : [])
-    .map((format) => String(format || "").toLowerCase());
-  const hasImageFormat = normalized.some((format) => /image|bitmap|png|jpeg|jpg|bmp/.test(format));
-  if (!hasImageFormat) {
-    return false;
-  }
-  const hasFileListFormat = normalized.some((format) =>
-    /file|filename|uri-list|x-moz-file|promise-url/.test(format)
-  );
-  if (hasFileListFormat) {
-    return false;
-  }
-  const htmlImageCount = countClipboardHtmlImages();
-  return htmlImageCount <= 1;
-}
-
-function countClipboardHtmlImages() {
-  try {
-    if (!electronClipboard || typeof electronClipboard.readHTML !== "function") {
-      return 0;
-    }
-    const html = String(electronClipboard.readHTML() || "");
-    return (html.match(/<img\b/gi) || []).length;
-  } catch (error) {
-    return 0;
   }
 }
 
