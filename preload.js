@@ -1,13 +1,6 @@
-const http = require("node:http");
-const https = require("node:https");
-const tls = require("node:tls");
-const net = require("node:net");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
-const { URL, fileURLToPath } = require("node:url");
+const { fileURLToPath } = require("node:url");
 
 const DATA_DIR_KEY = "ai-chat/data-dir/v1";
 const DEFAULT_DATA_DIR = getDefaultDataDir();
@@ -69,6 +62,13 @@ let chardetModule = null;
 let iconvModule = null;
 let officeParserModule = null;
 let WordExtractorModule = null;
+let execFileSyncFn = null;
+let httpModule = null;
+let httpsModule = null;
+let tlsModule = null;
+let netModule = null;
+let cryptoModule = null;
+let osModule = null;
 let cachedConfig = null;
 const activeChatRequests = new Map();
 let lastEnterAction = null;
@@ -104,7 +104,7 @@ if (typeof utools !== "undefined" && utools.setExpendHeight) {
   utools.setExpendHeight(680);
 }
 
-window.markMind = {
+window.aiChat = {
   getConfig,
   saveConfig,
   getChatStore,
@@ -144,9 +144,6 @@ window.markMind = {
     return lastEnterAction;
   }
 };
-window.quickEnglish = window.markMind;
-
-startClipboardWatcher(getConfig().clipboardPollingMs);
 
 function normalizeEnterAction(action) {
   const source = action && typeof action === "object" ? action : {};
@@ -199,6 +196,7 @@ function dispatchOutAction(action) {
 
 function getConfig() {
   if (cachedConfig) {
+    startClipboardWatcher(cachedConfig.clipboardPollingMs);
     return cachedConfig;
   }
 
@@ -211,6 +209,7 @@ function getConfig() {
     saveStoredDataDir(storage, normalized.dataDir);
   }
   cachedConfig = normalized;
+  startClipboardWatcher(normalized.clipboardPollingMs);
   return normalized;
 }
 
@@ -507,6 +506,55 @@ function getWordExtractor() {
     WordExtractorModule = require("word-extractor");
   }
   return WordExtractorModule;
+}
+
+function getExecFileSync() {
+  if (!execFileSyncFn) {
+    execFileSyncFn = require("node:child_process").execFileSync;
+  }
+  return execFileSyncFn;
+}
+
+function getHttp() {
+  if (!httpModule) {
+    httpModule = require("node:http");
+  }
+  return httpModule;
+}
+
+function getHttps() {
+  if (!httpsModule) {
+    httpsModule = require("node:https");
+  }
+  return httpsModule;
+}
+
+function getTls() {
+  if (!tlsModule) {
+    tlsModule = require("node:tls");
+  }
+  return tlsModule;
+}
+
+function getNet() {
+  if (!netModule) {
+    netModule = require("node:net");
+  }
+  return netModule;
+}
+
+function getCrypto() {
+  if (!cryptoModule) {
+    cryptoModule = require("node:crypto");
+  }
+  return cryptoModule;
+}
+
+function getOs() {
+  if (!osModule) {
+    osModule = require("node:os");
+  }
+  return osModule;
 }
 
 function getRecentClipboardText(maxAgeMs) {
@@ -831,7 +879,7 @@ function getDefaultDataDir() {
   if (process.platform === "win32") {
     return "D:\\utools_ai_chat";
   }
-  return path.join(os.homedir() || process.cwd(), "utools_ai_chat");
+  return path.join(getOs().homedir() || process.cwd(), "utools_ai_chat");
 }
 
 function getDialogDefaultPath(currentDir) {
@@ -845,7 +893,7 @@ function getDialogDefaultPath(currentDir) {
     return parent;
   }
 
-  const homeDir = os.homedir();
+  const homeDir = getOs().homedir();
   if (homeDir && isDirectory(homeDir)) {
     return homeDir;
   }
@@ -1057,7 +1105,7 @@ function cacheAttachmentDocument(filePath, extractedText, config, extension) {
 }
 
 function hashFile(filePath) {
-  const hash = crypto.createHash("sha256");
+  const hash = getCrypto().createHash("sha256");
   hash.update(fs.readFileSync(filePath));
   return hash.digest("hex");
 }
@@ -1772,6 +1820,7 @@ function matchesNoProxy(host, noProxy) {
 function resolveWindowsProxy(endpoint) {
   const key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
   try {
+    const execFileSync = getExecFileSync();
     const enableOutput = execFileSync("reg", ["query", key, "/v", "ProxyEnable"], {
       encoding: "utf8",
       timeout: 2000,
@@ -1830,6 +1879,7 @@ function proxyFromWindowsProxyServer(proxyServer, endpointProtocol) {
 
 function resolveMacProxy(endpoint) {
   try {
+    const execFileSync = getExecFileSync();
     const output = execFileSync("scutil", ["--proxy"], {
       encoding: "utf8",
       timeout: 2000
@@ -1865,7 +1915,7 @@ function resolveMacProxy(endpoint) {
 }
 
 function requestDirect(endpoint, provider, body, headers, onEvent, requestOptions) {
-  const transport = endpoint.protocol === "https:" ? https : http;
+  const transport = endpoint.protocol === "https:" ? getHttps() : getHttp();
   const options = {
     protocol: endpoint.protocol,
     hostname: endpoint.hostname,
@@ -1895,10 +1945,10 @@ async function requestViaProxy(endpoint, provider, body, headers, proxy, onEvent
       rejectUnauthorized: provider.sslVerify === true,
       timeout: REQUEST_TIMEOUT_MS
     };
-    return requestWithOptions(https, options, body, onEvent, requestOptions);
+    return requestWithOptions(getHttps(), options, body, onEvent, requestOptions);
   }
 
-  const transport = proxy.protocol === "https:" ? https : http;
+  const transport = proxy.protocol === "https:" ? getHttps() : getHttp();
   const proxyHeaders = Object.assign({}, headers, {
     Host: endpoint.host
   });
@@ -1923,7 +1973,7 @@ async function requestViaProxy(endpoint, provider, body, headers, proxy, onEvent
 }
 
 function requestModelDirect(endpoint, provider, headers) {
-  const transport = endpoint.protocol === "https:" ? https : http;
+  const transport = endpoint.protocol === "https:" ? getHttps() : getHttp();
   const options = {
     protocol: endpoint.protocol,
     hostname: endpoint.hostname,
@@ -1953,10 +2003,10 @@ async function requestModelViaProxy(endpoint, provider, headers, proxy) {
       rejectUnauthorized: provider.sslVerify === true,
       timeout: REQUEST_TIMEOUT_MS
     };
-    return requestTextWithOptions(https, options);
+    return requestTextWithOptions(getHttps(), options);
   }
 
-  const transport = proxy.protocol === "https:" ? https : http;
+  const transport = proxy.protocol === "https:" ? getHttps() : getHttp();
   const proxyHeaders = Object.assign({}, headers, {
     Host: endpoint.host
   });
@@ -1982,7 +2032,7 @@ async function requestModelViaProxy(endpoint, provider, headers, proxy) {
 
 function createProxyTunnel(endpoint, provider, proxy, requestOptions) {
   return new Promise((resolve, reject) => {
-    const transport = proxy.protocol === "https:" ? https : http;
+    const transport = proxy.protocol === "https:" ? getHttps() : getHttp();
     const endpointPort = endpoint.port || defaultPort(endpoint);
     const headers = {
       Host: `${endpoint.hostname}:${endpointPort}`
@@ -2013,9 +2063,9 @@ function createProxyTunnel(endpoint, provider, proxy, requestOptions) {
         return;
       }
 
-      const secureSocket = tls.connect({
+      const secureSocket = getTls().connect({
         socket,
-        servername: net.isIP(endpoint.hostname) ? undefined : endpoint.hostname,
+        servername: getNet().isIP(endpoint.hostname) ? undefined : endpoint.hostname,
         rejectUnauthorized: provider.sslVerify === true
       });
 
@@ -2444,10 +2494,10 @@ function normalizeDataDir(value) {
     return DEFAULT_DATA_DIR;
   }
   if (dataDir === "~") {
-    return os.homedir() || DEFAULT_DATA_DIR;
+    return getOs().homedir() || DEFAULT_DATA_DIR;
   }
   if (dataDir.startsWith("~/") || dataDir.startsWith("~\\")) {
-    return path.join(os.homedir() || DEFAULT_DATA_DIR, dataDir.slice(2));
+    return path.join(getOs().homedir() || DEFAULT_DATA_DIR, dataDir.slice(2));
   }
   if (process.platform !== "win32" && /^[a-z]:[\\/]/i.test(dataDir)) {
     return DEFAULT_DATA_DIR;

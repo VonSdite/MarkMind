@@ -52,8 +52,10 @@
       title: "选择模型"
     }
   ];
-  var api = window.markMind || window.quickEnglish || createBrowserFallbackApi();
-  var markdownRenderer = createMarkdownRenderer();
+  var api = window.aiChat || createBrowserFallbackApi();
+  var markdownRenderer = null;
+  var markdownRendererLoading = null;
+  var markdownRendererRefreshQueued = false;
   var state = {
     config: {
       providers: [],
@@ -121,12 +123,13 @@
 
   async function init() {
     cacheElements();
-    bindEvents();
     var initialAction = api.getLastEnterAction ? api.getLastEnterAction() : null;
     var initialTab = initialAction ? tabFromEnterAction(initialAction) : "chat";
     primeInitialTab(initialTab);
+    await nextFrame();
+    bindEvents();
 
-    await Promise.all([loadUserProfile(), loadConfig()]);
+    await loadConfig();
     await ensureStoreForTab(initialTab);
 
     if (api.onEnter) {
@@ -145,6 +148,14 @@
     }
 
     loadDeferredStores();
+  }
+
+  function nextFrame() {
+    return new Promise(function (resolve) {
+      window.requestAnimationFrame(function () {
+        resolve();
+      });
+    });
   }
 
   function cacheElements() {
@@ -527,6 +538,11 @@
       return window.setTimeout(callback, 800);
     };
     schedule(function () {
+      loadUserProfile().then(function () {
+        if (state.activeTab === "chat") {
+          renderMessages({ preserveScroll: true });
+        }
+      });
       if (!state.chatStoreLoaded) {
         ensureChatStoreLoaded().then(function () {
           if (state.activeTab === "chat") {
@@ -541,6 +557,7 @@
           }
         });
       }
+      ensureMarkdownRenderer();
     });
   }
 
@@ -675,13 +692,13 @@
 
   function tabFromActionCode(code) {
     var value = String(code || "").trim().toLowerCase();
-    if (value === "ai-chat-translate" || value === "markmind-translate" || value === "translate") {
+    if (value === "ai-chat-translate" || value === "translate") {
       return "translate";
     }
-    if (value === "ai-chat-summary" || value === "markmind-summary" || value === "summary") {
+    if (value === "ai-chat-summary" || value === "summary") {
       return "summary";
     }
-    if (value === "ai-chat-explain" || value === "markmind-explain" || value === "explain") {
+    if (value === "ai-chat-explain" || value === "explain") {
       return "explain";
     }
     if (value === "ai-chat-ocr" || value === "ocr") {
@@ -690,12 +707,11 @@
     if (
       value === "ai-chat" ||
       value === "ai-chat-explicit" ||
-      value === "markmind-chat" ||
       value === "chat"
     ) {
       return "chat";
     }
-    if (value === "ai-chat-settings" || value === "markmind-settings" || value === "settings") {
+    if (value === "ai-chat-settings" || value === "settings") {
       return "settings";
     }
     return "";
@@ -1613,11 +1629,18 @@
   function renderTaskResult(text, cancelled) {
     hideSelectionSpeechButton();
     els.resultText.classList.remove("is-placeholder", "is-processing");
-    els.resultText.innerHTML = (text ? renderMarkdown(text) : "") + (cancelled ? renderCancelDivider() : "");
+    var hasText = Boolean(String(text || "").trim());
+    els.resultText.classList.toggle("is-cancelled-empty", cancelled === true && !hasText);
+    els.resultText.innerHTML = hasText
+      ? renderMarkdown(text) + (cancelled ? renderCancelDivider() : "")
+      : cancelled
+        ? renderTaskCancelStatus()
+        : "";
   }
 
   function renderTaskPlaceholder(text, processing) {
     hideSelectionSpeechButton();
+    els.resultText.classList.remove("is-cancelled-empty");
     els.resultText.classList.add("is-placeholder");
     els.resultText.classList.toggle("is-processing", processing === true);
     els.resultText.innerHTML = processing
@@ -3308,6 +3331,14 @@
       "</strong>" +
       "<span></span>" +
       "</div>"
+    );
+  }
+
+  function renderTaskCancelStatus() {
+    return (
+      '<span class="task-cancel-status">' +
+      CANCELLED_MESSAGE +
+      "</span>"
     );
   }
 
@@ -6573,6 +6604,62 @@
     return renderer;
   }
 
+  function ensureMarkdownRenderer() {
+    if (markdownRenderer) {
+      return Promise.resolve(markdownRenderer);
+    }
+    if (typeof window.markdownit === "function") {
+      markdownRenderer = createMarkdownRenderer();
+      return Promise.resolve(markdownRenderer);
+    }
+    if (markdownRendererLoading) {
+      return markdownRendererLoading;
+    }
+
+    markdownRendererLoading = new Promise(function (resolve) {
+      var script = document.createElement("script");
+      script.src = "vendor/markdown-it.min.js";
+      script.async = true;
+      script.onload = function () {
+        markdownRenderer = createMarkdownRenderer();
+        markdownRendererLoading = null;
+        resolve(markdownRenderer);
+      };
+      script.onerror = function () {
+        markdownRendererLoading = null;
+        resolve(null);
+      };
+      document.head.appendChild(script);
+    });
+    return markdownRendererLoading;
+  }
+
+  function loadMarkdownRendererForRender() {
+    if (markdownRenderer || markdownRendererRefreshQueued) {
+      return;
+    }
+    markdownRendererRefreshQueued = true;
+    ensureMarkdownRenderer().then(function (renderer) {
+      markdownRendererRefreshQueued = false;
+      if (renderer) {
+        rerenderMarkdownContent();
+      }
+    });
+  }
+
+  function rerenderMarkdownContent() {
+    if (state.activeTab === "task") {
+      var taskState = getActiveTaskState();
+      if (state.currentResult || taskState.cancelled) {
+        renderTaskResult(state.currentResult, taskState.cancelled);
+      }
+      return;
+    }
+    if (state.activeTab === "chat") {
+      renderMessages({ preserveScroll: true });
+    }
+  }
+
   function setMarkdownTokenAttr(token, name, value) {
     var index = token.attrIndex(name);
     if (index < 0) {
@@ -6635,6 +6722,7 @@
     if (markdownRenderer) {
       return markdownRenderer.render(text);
     }
+    loadMarkdownRendererForRender();
     return "<p>" + escapeHtml(text).replace(/\n/g, "<br>") + "</p>";
   }
 

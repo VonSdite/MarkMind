@@ -621,8 +621,27 @@ button:disabled {
   animation: taskOutputGlow 1.8s ease-in-out infinite;
 }
 
+.result-text.is-cancelled-empty {
+  display: flex;
+  align-items: flex-start;
+}
+
 .result-placeholder {
   color: #83908b;
+}
+
+.task-cancel-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid #ead8b7;
+  border-radius: 999px;
+  background: #fff8ea;
+  color: #8a6a2f;
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1.4;
 }
 
 .task-waiting {
