@@ -219,6 +219,12 @@ button:disabled {
   display: grid;
 }
 
+#settingsView {
+  height: calc(100vh - 66px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 #taskView {
   height: calc(100vh - 66px);
   grid-template-rows: minmax(230px, auto) minmax(220px, 1fr);
@@ -2593,6 +2599,10 @@ button:disabled {
 
   .view {
     min-height: calc(100vh - 111px);
+  }
+
+  #settingsView {
+    height: calc(100vh - 111px);
   }
 
   #taskView {
