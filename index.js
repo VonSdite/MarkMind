@@ -112,6 +112,7 @@
     taskSpeechUtterance: null,
     selectionSpeechText: "",
     selectionSpeechTimer: 0,
+    selectionSpeechSelecting: false,
     reasoningToggleAt: 0,
     reasoningToggleMessageId: "",
     internalImagePasteAt: 0,
@@ -454,6 +455,7 @@
     });
     document.addEventListener("selectionchange", scheduleSelectionSpeechButtonUpdate);
     document.addEventListener("mousedown", handleDocumentMouseDownForSelectionSpeech);
+    document.addEventListener("mouseup", handleDocumentMouseUpForSelectionSpeech);
     document.addEventListener("paste", markInternalImagePaste, true);
     document.addEventListener("copy", markInternalClipboardCopy, true);
     window.addEventListener("resize", hideSelectionSpeechButton);
@@ -1696,11 +1698,17 @@
 
   function scheduleSelectionSpeechButtonUpdate() {
     window.clearTimeout(state.selectionSpeechTimer);
+    if (state.selectionSpeechSelecting) {
+      return;
+    }
     state.selectionSpeechTimer = window.setTimeout(updateSelectionSpeechButton, 20);
   }
 
   function updateSelectionSpeechButton() {
     if (!els.selectionSpeakBtn) {
+      return;
+    }
+    if (state.selectionSpeechSelecting) {
       return;
     }
     if (!canUseSelectionSpeech()) {
@@ -1964,9 +1972,22 @@
       return;
     }
     if (isSelectionSpeechSurface(target)) {
+      state.selectionSpeechSelecting = event.button === 0;
+      if (state.selectionSpeechSelecting) {
+        hideSelectionSpeechButton();
+      }
       return;
     }
+    state.selectionSpeechSelecting = false;
     hideSelectionSpeechButton();
+  }
+
+  function handleDocumentMouseUpForSelectionSpeech() {
+    if (!state.selectionSpeechSelecting) {
+      return;
+    }
+    state.selectionSpeechSelecting = false;
+    scheduleSelectionSpeechButtonUpdate();
   }
 
   function isSelectionSpeechSurface(target) {
