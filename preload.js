@@ -18,6 +18,7 @@ const DEFAULT_RECENT_CLIPBOARD_MS = 2000;
 const DEFAULT_CLIPBOARD_POLL_MS = 500;
 const DEFAULT_PROXY_MODE = "system";
 const MODEL_MODES = ["translate", "summary", "explain", "ocr", "chat"];
+const CLIPBOARD_WATCH_MODES = ["translate", "summary", "explain", "ocr", "chat"];
 const TEXT_EXTENSIONS = [
   "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml",
   "xml", "html", "htm", "log", "ini", "conf", "js", "jsx", "ts", "tsx",
@@ -82,8 +83,10 @@ let clipboardImageChangedAt = 0;
 let clipboardImageBaselinePending = false;
 let clipboardWatcherTimer = null;
 let clipboardWatcherIntervalMs = 0;
+let clipboardWatchActive = false;
 const enterListeners = new Set();
 const outListeners = new Set();
+const detachListeners = new Set();
 const clipboardListeners = new Set();
 
 if (typeof utools !== "undefined" && utools.onPluginEnter) {
@@ -97,9 +100,16 @@ if (typeof utools !== "undefined" && utools.onPluginOut) {
   utools.onPluginOut((action) => {
     const normalized = normalizeOutAction(action);
     dispatchOutAction(normalized);
+    setClipboardWatchActive(false);
     if (normalized.isKill) {
       abortAllActiveRequests();
     }
+  });
+}
+
+if (typeof utools !== "undefined" && typeof utools.onPluginDetach === "function") {
+  utools.onPluginDetach(() => {
+    dispatchDetachAction();
   });
 }
 
@@ -131,6 +141,8 @@ window.aiChat = {
   getRecentClipboardText,
   getRecentClipboardImage,
   getRecentClipboardImages,
+  getWindowType,
+  setClipboardWatchActive,
   readImageAttachment,
   readImageAttachments,
   chooseDataDirectory,
@@ -143,6 +155,10 @@ window.aiChat = {
   onOut(listener) {
     outListeners.add(listener);
     return () => outListeners.delete(listener);
+  },
+  onDetach(listener) {
+    detachListeners.add(listener);
+    return () => detachListeners.delete(listener);
   },
   onClipboardChange(listener) {
     clipboardListeners.add(listener);
@@ -228,6 +244,16 @@ function dispatchOutAction(action) {
   });
 }
 
+function dispatchDetachAction() {
+  detachListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (error) {
+      console.error(error);
+    }
+  });
+}
+
 function dispatchClipboardChange(event) {
   const payload = normalizeClipboardChangeEvent(event);
   if (!payload.text && !payload.images.length) {
@@ -254,7 +280,7 @@ function normalizeClipboardChangeEvent(event) {
 
 function getConfig() {
   if (cachedConfig) {
-    startClipboardWatcher(cachedConfig.clipboardPollingMs);
+    syncClipboardWatcherForConfig(cachedConfig);
     return cachedConfig;
   }
 
@@ -267,7 +293,7 @@ function getConfig() {
     saveStoredDataDir(storage, normalized.dataDir);
   }
   cachedConfig = normalized;
-  startClipboardWatcher(normalized.clipboardPollingMs);
+  syncClipboardWatcherForConfig(normalized);
   return normalized;
 }
 
@@ -282,7 +308,7 @@ function saveConfig(config) {
   writeConfigFile(normalized);
   saveStoredDataDir(storage, normalized.dataDir);
   cachedConfig = normalized;
-  startClipboardWatcher(normalized.clipboardPollingMs);
+  syncClipboardWatcherForConfig(normalized);
   return normalized;
 }
 
@@ -585,6 +611,19 @@ function getClipboardText() {
   return "";
 }
 
+function getWindowType() {
+  if (typeof utools !== "undefined" && typeof utools.getWindowType === "function") {
+    return String(utools.getWindowType() || "");
+  }
+  return "";
+}
+
+function setClipboardWatchActive(active) {
+  clipboardWatchActive = active === true;
+  syncClipboardWatcherForConfig(cachedConfig || getConfig());
+  return clipboardWatchActive;
+}
+
 function getUser() {
   if (typeof utools !== "undefined" && typeof utools.getUser === "function") {
     return utools.getUser();
@@ -692,12 +731,12 @@ function getRecentClipboardImages(maxAgeMs) {
   return image ? [image] : [];
 }
 
-async function readImageAttachment(payload) {
-  const attachments = await readImageAttachments(payload);
+async function readImageAttachment(payload, options) {
+  const attachments = await readImageAttachments(payload, options);
   return attachments[0] || null;
 }
 
-async function readImageAttachments(payload) {
+async function readImageAttachments(payload, options) {
   const attachments = extractImageDataUrlPayloads(payload);
   const filePaths = uniqueValues(extractImagePayloadPaths(payload).map(normalizeLocalPayloadPath));
 
@@ -714,6 +753,10 @@ async function readImageAttachments(payload) {
 
   if (attachments.length) {
     return attachments;
+  }
+
+  if (options && options.skipClipboardFallback) {
+    return [];
   }
 
   const image = safeReadClipboardImage();
@@ -805,6 +848,38 @@ function normalizeLocalPayloadPath(value) {
   return filePath;
 }
 
+function syncClipboardWatcherForConfig(config) {
+  const normalized = normalizeConfig(config);
+  if (shouldClipboardWatcherRunForWindow() && hasEnabledClipboardWatchMode(normalized.clipboardWatchModes)) {
+    startClipboardWatcher(normalized.clipboardPollingMs);
+    return;
+  }
+  stopClipboardWatcher();
+}
+
+function shouldClipboardWatcherRunForWindow() {
+  return clipboardWatchActive && getWindowType() === "detach";
+}
+
+function hasEnabledClipboardWatchMode(modes) {
+  const normalized = normalizeClipboardWatchModes(modes);
+  return CLIPBOARD_WATCH_MODES.some((mode) => normalized[mode] === true);
+}
+
+function stopClipboardWatcher() {
+  if (clipboardWatcherTimer) {
+    clearInterval(clipboardWatcherTimer);
+  }
+  clipboardWatcherTimer = null;
+  clipboardWatcherIntervalMs = 0;
+  clipboardSnapshotText = "";
+  clipboardChangedAt = 0;
+  clipboardSnapshotImage = null;
+  clipboardImageFingerprint = "";
+  clipboardImageChangedAt = 0;
+  clipboardImageBaselinePending = false;
+}
+
 function startClipboardWatcher(intervalMs) {
   if (!electronClipboard) {
     return;
@@ -828,6 +903,10 @@ function startClipboardWatcher(intervalMs) {
 
 function updateClipboardSnapshot(options) {
   if (!electronClipboard) {
+    return;
+  }
+  if (!shouldClipboardWatcherRunForWindow()) {
+    stopClipboardWatcher();
     return;
   }
   const settings = options || {};
@@ -2587,6 +2666,23 @@ function extractModelNames(value) {
   return names.sort((left, right) => left.localeCompare(right));
 }
 
+function createDefaultClipboardWatchModes() {
+  const modes = {};
+  CLIPBOARD_WATCH_MODES.forEach((mode) => {
+    modes[mode] = false;
+  });
+  return modes;
+}
+
+function normalizeClipboardWatchModes(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const modes = createDefaultClipboardWatchModes();
+  CLIPBOARD_WATCH_MODES.forEach((mode) => {
+    modes[mode] = source[mode] === true;
+  });
+  return modes;
+}
+
 function normalizeConfig(config) {
   const source = config && typeof config === "object" ? config : {};
   const providers = Array.isArray(source.providers)
@@ -2615,6 +2711,7 @@ function normalizeConfig(config) {
   return {
     dataDir: normalizeDataDir(source.dataDir),
     recentClipboardMs: normalizeRecentClipboardMs(source.recentClipboardMs),
+    clipboardWatchModes: normalizeClipboardWatchModes(source.clipboardWatchModes),
     clipboardPollingMs: normalizeClipboardPollingMs(source.clipboardPollingMs),
     proxyMode: normalizeProxyMode(source.proxyMode),
     proxyUrl: typeof source.proxyUrl === "string" ? source.proxyUrl.trim() : "",

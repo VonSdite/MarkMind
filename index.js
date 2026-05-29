@@ -26,6 +26,7 @@
   };
   var TASK_MODES = ["translate", "summary", "explain", "ocr"];
   var MODEL_MODES = ["translate", "summary", "explain", "ocr", "chat"];
+  var CLIPBOARD_WATCH_MODES = ["translate", "summary", "explain", "ocr", "chat"];
   var TEXT_EXTENSIONS = [
     "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml",
     "xml", "html", "htm", "log", "ini", "conf", "js", "jsx", "ts", "tsx",
@@ -65,6 +66,7 @@
       modeModels: createEmptyModeModels(),
       dataDir: DEFAULT_DATA_DIR,
       recentClipboardMs: DEFAULT_RECENT_CLIPBOARD_MS,
+      clipboardWatchModes: createDefaultClipboardWatchModes(),
       clipboardPollingMs: DEFAULT_CLIPBOARD_POLL_MS,
       proxyMode: DEFAULT_PROXY_MODE,
       proxyUrl: ""
@@ -146,6 +148,10 @@
       api.onOut(handlePluginOut);
     }
 
+    if (api.onDetach) {
+      api.onDetach(updateClipboardWatchRuntime);
+    }
+
     if (api.onClipboardChange) {
       api.onClipboardChange(handleClipboardChange);
     }
@@ -170,6 +176,7 @@
 
   function cacheElements() {
     els.viewTitle = document.getElementById("viewTitle");
+    els.clipboardWatchToggle = document.getElementById("clipboardWatchToggle");
     els.chatSearchBtn = document.getElementById("chatSearchBtn");
     els.inputText = document.getElementById("inputText");
     els.resultText = document.getElementById("resultText");
@@ -209,7 +216,6 @@
     els.sendChatBtn = document.getElementById("sendChatBtn");
     els.stopChatBtn = document.getElementById("stopChatBtn");
     els.dataDirInput = document.getElementById("dataDirInput");
-    els.clipboardWindowInput = document.getElementById("clipboardWindowInput");
     els.clipboardPollingInput = document.getElementById("clipboardPollingInput");
     els.pluginProxyModeSelect = document.getElementById("pluginProxyModeSelect");
     els.pluginProxyUrlInput = document.getElementById("pluginProxyUrlInput");
@@ -336,6 +342,7 @@
     els.resultText.addEventListener("mouseup", scheduleSelectionSpeechButtonUpdate);
     els.resultText.addEventListener("scroll", hideSelectionSpeechButton);
     els.taskView.addEventListener("scroll", hideSelectionSpeechButton);
+    els.clipboardWatchToggle.addEventListener("click", toggleClipboardWatchMode);
     els.chatSearchBtn.addEventListener("click", openChatSearch);
     els.chatSearchCloseBtn.addEventListener("click", function () {
       closeChatSearch(true);
@@ -355,13 +362,6 @@
       if (event.key === "Enter") {
         event.preventDefault();
         els.dataDirInput.blur();
-      }
-    });
-    els.clipboardWindowInput.addEventListener("focusout", saveClipboardWindowSetting);
-    els.clipboardWindowInput.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        els.clipboardWindowInput.blur();
       }
     });
     els.clipboardPollingInput.addEventListener("focusout", saveClipboardPollingSetting);
@@ -458,6 +458,7 @@
     document.addEventListener("mouseup", handleDocumentMouseUpForSelectionSpeech);
     document.addEventListener("paste", markInternalImagePaste, true);
     document.addEventListener("copy", markInternalClipboardCopy, true);
+    window.addEventListener("focus", updateClipboardWatchRuntime);
     window.addEventListener("resize", hideSelectionSpeechButton);
 
     els.sideTabs.forEach(function (tab) {
@@ -473,6 +474,9 @@
       state.draftProviders = cloneProviders(state.config.providers);
     } catch (error) {
       showToast("读取设置失败：" + getErrorMessage(error));
+    } finally {
+      renderClipboardWatchToggle();
+      updateClipboardWatchRuntime();
     }
   }
 
@@ -652,6 +656,7 @@
     }
     saveTaskStoreQuietly({ immediate: true });
     saveChatStoreQuietly();
+    updateClipboardWatchRuntime();
 
     if (action && action.isKill) {
       abortAllTaskRuns({ showToast: false });
@@ -678,7 +683,11 @@
     if (!event || state.activeTab === "settings") {
       return false;
     }
-    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    if (!isClipboardWatchEnabledForActiveMode()) {
+      return false;
+    }
+    if (!isDetachedWindow()) {
+      updateClipboardWatchRuntime();
       return false;
     }
     if (isInternalClipboardCopy(event)) {
@@ -1009,18 +1018,15 @@
 
   async function resolveEnterActionPayload(intent) {
     var action = intent.action;
-    var selectedImages = shouldReadActionPayloadImages(intent) ? await readActionImages(action && action.payload) : [];
+    var selectedImages = shouldReadActionPayloadImages(intent)
+      ? await readActionImages(action && action.payload, {
+        allowClipboardFallback: false
+      })
+      : [];
     var selectedText = shouldReadActionPayloadText(intent, selectedImages) ? extractPayloadText(action && action.payload) : "";
-    var text = selectedText || (await readRecentClipboardText());
-    var shouldReadClipboardImages = intent.tab === "ocr" || !text;
-    var images = selectedImages.length
-      ? selectedImages
-      : shouldReadClipboardImages
-        ? await readRecentClipboardImages()
-        : [];
     return {
-      text: text,
-      images: images
+      text: selectedText,
+      images: selectedImages
     };
   }
 
@@ -1038,7 +1044,7 @@
   }
 
   function shouldReadActionPayloadImages(intent) {
-    return isImageEnterType(intent.type) || actionPayloadLooksLikeImage(intent.action && intent.action.payload);
+    return actionPayloadLooksLikeImage(intent.action && intent.action.payload);
   }
 
   function actionPayloadLooksLikeImage(payload) {
@@ -1087,41 +1093,17 @@
     return /^data:image\//i.test(text) || /\.(png|jpe?g|webp|gif|bmp)(?:[?#].*)?$/i.test(text);
   }
 
-  async function readRecentClipboardText() {
-    if (!api.getRecentClipboardText) {
-      return "";
-    }
-    try {
-      var maxAgeMs = normalizeRecentClipboardMs(state.config.recentClipboardMs);
-      return String((await api.getRecentClipboardText(maxAgeMs)) || "").trim();
-    } catch (error) {
-      return "";
-    }
-  }
-
-  async function readRecentClipboardImages() {
-    if (!api.getRecentClipboardImages && !api.getRecentClipboardImage) {
-      return [];
-    }
-    try {
-      var maxAgeMs = normalizeRecentClipboardMs(state.config.recentClipboardMs);
-      var attachments = api.getRecentClipboardImages
-        ? await api.getRecentClipboardImages(maxAgeMs)
-        : [await api.getRecentClipboardImage(maxAgeMs)];
-      return normalizePreparedAttachments(attachments);
-    } catch (error) {
-      return [];
-    }
-  }
-
-  async function readActionImages(payload) {
+  async function readActionImages(payload, options) {
     if (!api.readImageAttachments && !api.readImageAttachment) {
       return [];
     }
     try {
+      var readOptions = {
+        skipClipboardFallback: !(options && options.allowClipboardFallback)
+      };
       var attachments = api.readImageAttachments
-        ? await api.readImageAttachments(payload)
-        : [await api.readImageAttachment(payload)];
+        ? await api.readImageAttachments(payload, readOptions)
+        : [await api.readImageAttachment(payload, readOptions)];
       return normalizePreparedAttachments(attachments);
     } catch (error) {
       return [];
@@ -1213,6 +1195,68 @@
     if (els.chatSearchBtn) {
       els.chatSearchBtn.hidden = state.activeTab !== "chat";
     }
+    renderClipboardWatchToggle();
+  }
+
+  function getActiveClipboardWatchMode() {
+    if (state.activeTab === "chat") {
+      return "chat";
+    }
+    if (state.activeTab === "task") {
+      return state.activeTaskMode;
+    }
+    return "";
+  }
+
+  function isClipboardWatchEnabledForMode(mode) {
+    var modes = normalizeClipboardWatchModes(state.config.clipboardWatchModes);
+    return Boolean(mode && modes[mode]);
+  }
+
+  function isClipboardWatchEnabledForActiveMode() {
+    return isClipboardWatchEnabledForMode(getActiveClipboardWatchMode());
+  }
+
+  function isDetachedWindow() {
+    var windowType = api.getWindowType ? String(api.getWindowType() || "") : "";
+    return windowType === "detach";
+  }
+
+  function shouldRunClipboardWatcher() {
+    return isClipboardWatchEnabledForActiveMode() && isDetachedWindow();
+  }
+
+  function updateClipboardWatchRuntime() {
+    if (api.setClipboardWatchActive) {
+      api.setClipboardWatchActive(shouldRunClipboardWatcher());
+    }
+  }
+
+  function renderClipboardWatchToggle() {
+    if (!els.clipboardWatchToggle) {
+      return;
+    }
+    var mode = getActiveClipboardWatchMode();
+    var enabled = isClipboardWatchEnabledForMode(mode);
+    var label = enabled ? "关闭剪贴板监听" : "开启剪贴板监听";
+    els.clipboardWatchToggle.hidden = !mode;
+    els.clipboardWatchToggle.classList.toggle("is-active", enabled);
+    els.clipboardWatchToggle.title = label;
+    els.clipboardWatchToggle.setAttribute("aria-label", label);
+    els.clipboardWatchToggle.setAttribute("aria-pressed", enabled ? "true" : "false");
+    updateClipboardWatchRuntime();
+  }
+
+  function toggleClipboardWatchMode() {
+    var mode = getActiveClipboardWatchMode();
+    if (!mode) {
+      return;
+    }
+    var modes = cloneClipboardWatchModes(state.config.clipboardWatchModes);
+    modes[mode] = !modes[mode];
+    state.config.clipboardWatchModes = modes;
+    renderClipboardWatchToggle();
+    saveConfigQuietly();
   }
 
   function handleSubmitKeydown(event, submit) {
@@ -5202,11 +5246,6 @@
     if (document.activeElement !== els.dataDirInput) {
       els.dataDirInput.value = normalizeDataDir(state.config.dataDir);
     }
-    if (document.activeElement !== els.clipboardWindowInput) {
-      els.clipboardWindowInput.value = formatClipboardWindowSeconds(
-        state.config.recentClipboardMs
-      );
-    }
     if (document.activeElement !== els.clipboardPollingInput) {
       els.clipboardPollingInput.value = formatClipboardPollingMs(
         state.config.clipboardPollingMs
@@ -5254,18 +5293,6 @@
 
     els.dataDirInput.value = selected;
     await saveDataDirSetting();
-  }
-
-  async function saveClipboardWindowSetting() {
-    var previousMs = normalizeRecentClipboardMs(state.config.recentClipboardMs);
-    var nextMs = normalizeClipboardWindowInput(els.clipboardWindowInput.value);
-    els.clipboardWindowInput.value = formatClipboardWindowSeconds(nextMs);
-    if (previousMs === nextMs) {
-      state.config.recentClipboardMs = nextMs;
-      return;
-    }
-    state.config.recentClipboardMs = nextMs;
-    await saveDraftSettings({ showSuccess: true });
   }
 
   async function saveClipboardPollingSetting() {
@@ -5895,6 +5922,7 @@
     var nextConfig = {
       dataDir: normalizeDataDir(state.config.dataDir),
       recentClipboardMs: normalizeRecentClipboardMs(state.config.recentClipboardMs),
+      clipboardWatchModes: cloneClipboardWatchModes(state.config.clipboardWatchModes),
       clipboardPollingMs: normalizeClipboardPollingMs(state.config.clipboardPollingMs),
       proxyMode: normalizeProxyMode(state.config.proxyMode),
       proxyUrl: normalizeProxyUrl(state.config.proxyUrl),
@@ -6049,6 +6077,27 @@
     };
   }
 
+  function createDefaultClipboardWatchModes() {
+    var modes = {};
+    CLIPBOARD_WATCH_MODES.forEach(function (mode) {
+      modes[mode] = false;
+    });
+    return modes;
+  }
+
+  function normalizeClipboardWatchModes(value) {
+    var source = value && typeof value === "object" ? value : {};
+    var modes = createDefaultClipboardWatchModes();
+    CLIPBOARD_WATCH_MODES.forEach(function (mode) {
+      modes[mode] = source[mode] === true;
+    });
+    return modes;
+  }
+
+  function cloneClipboardWatchModes(value) {
+    return normalizeClipboardWatchModes(value);
+  }
+
   function normalizeConfig(config) {
     var source = config && typeof config === "object" ? config : {};
     var providers = Array.isArray(source.providers)
@@ -6063,6 +6112,7 @@
     return {
       dataDir: normalizeDataDir(source.dataDir),
       recentClipboardMs: normalizeRecentClipboardMs(source.recentClipboardMs),
+      clipboardWatchModes: normalizeClipboardWatchModes(source.clipboardWatchModes),
       clipboardPollingMs: normalizeClipboardPollingMs(source.clipboardPollingMs),
       proxyMode: normalizeProxyMode(source.proxyMode),
       proxyUrl: normalizeProxyUrl(source.proxyUrl),
@@ -6100,19 +6150,6 @@
       return DEFAULT_RECENT_CLIPBOARD_MS;
     }
     return Math.max(0, Math.min(60000, Math.round(milliseconds)));
-  }
-
-  function normalizeClipboardWindowInput(value) {
-    var seconds = Number(value);
-    if (!Number.isFinite(seconds)) {
-      return DEFAULT_RECENT_CLIPBOARD_MS;
-    }
-    return normalizeRecentClipboardMs(seconds * 1000);
-  }
-
-  function formatClipboardWindowSeconds(value) {
-    var seconds = normalizeRecentClipboardMs(value) / 1000;
-    return String(Number(seconds.toFixed(1)));
   }
 
   function normalizeClipboardPollingMs(value) {
@@ -7333,6 +7370,12 @@
       getRecentClipboardImages: function () {
         return [];
       },
+      getWindowType: function () {
+        return "";
+      },
+      setClipboardWatchActive: function () {
+        return false;
+      },
       readImageAttachment: function () {
         return null;
       },
@@ -7355,6 +7398,7 @@
         return null;
       },
       onOut: function () {},
+      onDetach: function () {},
       copyText: function (text) {
         return navigator.clipboard.writeText(text);
       },

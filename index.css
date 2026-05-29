@@ -205,6 +205,62 @@ button:disabled {
   color: var(--ink);
 }
 
+.clipboard-watch-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  width: 62px;
+  min-width: 62px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 7px;
+  background: #ffffff;
+  color: var(--muted);
+}
+
+.clipboard-watch-toggle:hover {
+  border-color: #b9c6be;
+  background: #f7faf8;
+  color: var(--ink);
+}
+
+.clipboard-watch-toggle.is-active {
+  border-color: rgba(0, 127, 120, 0.38);
+  background: #e6f4f1;
+  color: var(--teal-dark);
+}
+
+.clipboard-watch-switch {
+  position: relative;
+  width: 24px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #cfd9d4;
+}
+
+.clipboard-watch-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  transition: transform 120ms ease;
+}
+
+.clipboard-watch-toggle.is-active .clipboard-watch-switch {
+  background: var(--teal);
+}
+
+.clipboard-watch-toggle.is-active .clipboard-watch-switch::before {
+  transform: translateX(10px);
+}
+
 .main {
   flex: 1;
   min-height: 0;
